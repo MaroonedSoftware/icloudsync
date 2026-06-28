@@ -1,0 +1,16 @@
+packages:
+    - apps/*
+    - packages/*
+
+allowBuilds:
+    '@swc/core': true
+    cbor-extract: true
+    esbuild: true
+    protobufjs: true
+
+minimumReleaseAgeExclude:
+    - injectkit
+    - '@maroonedsoftware/*'
+    - '@contractkit/*'
+
+confirmModulesPurge: false

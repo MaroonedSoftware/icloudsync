@@ -1,0 +1,67 @@
+*venv*
+*.sqlite3
+.idea/
+*.pyc
+.env
+*.log
+
+build/
+dist/
+
+*.egg-info/
+*.DS_Store
+.vscode/
+
+backend/docker-compose.yml
+backend/.env-local/
+
+.coverage
+
+.claude/*
+!.claude/commands*
+!.claude/commands/**
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json
+
+.claude.local.md
+CLAUDE.local.md
+
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+.pnpm-store/
+
+# Testing
+coverage
+
+# Turbo
+.turbo
+
+# Build Outputs
+dist/
+storybook-static/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+.DS_Store
+*.pem
+
+# Auto Claude data directory
+.auto-claude/
+
+# Auto Claude generated files
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.worktrees/
+.security-key
+logs/security/
+.contractkit-cache
+.contractkit/
+.envrc

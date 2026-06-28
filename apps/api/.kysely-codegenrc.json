@@ -1,0 +1,35 @@
+{
+    "camelCase": true,
+    "customImports": {
+        "DateTime": "luxon",
+        "Duration": "luxon"
+    },
+    "dateParser": "timestamp",
+    "defaultSchemas": [
+        "public"
+    ],
+    "dialect": "postgres",
+    "domains": true,
+    "envFile": ".env",
+    "excludePattern": "pgboss.*",
+    "includePattern": null,
+    "logLevel": "warn",
+    "numericParser": "string",
+    "outFile": "./src/modules/data/kysely.ts",
+    "overrides": {
+       
+    },
+    "partitions": false,
+    "print": false,
+    "runtimeEnums": false,
+    "singularize": false,
+    "typeMapping": {
+        "date": "DateTime",
+        "timestamptz": "DateTime",
+        "interval": "Duration",
+        "int8": "bigint"
+    },
+    "typeOnlyImports": true,
+    "url": "env(DATABASE_URL)",
+    "verify": false
+}

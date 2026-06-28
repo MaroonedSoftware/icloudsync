@@ -1,0 +1,62 @@
+{
+    "$schema": "https://turborepo.com/schema.json",
+    "globalPassThroughEnv": ["SHELL"],
+    "tasks": {
+        "build": {
+            "dependsOn": ["^build"],
+            "inputs": ["$TURBO_DEFAULT$", ".env*"],
+            "outputs": ["dist/**"]
+        },
+        "format": {
+            "dependsOn": ["^format"]
+        },
+        "lint": {
+            "dependsOn": ["^lint"]
+        },
+        "dev": {
+            "cache": false,
+            "persistent": true
+        },
+        "test": {
+            "dependsOn": ["^test"]
+        },
+        "build:datatypes": {
+            "dependsOn": ["^build:datatypes"]
+        },
+        "build:contracts": {
+            "dependsOn": ["^build:contracts"],
+            "cache": false
+        },
+        "build:permissions": {
+            "dependsOn": ["^build:permissions"],
+            "inputs": ["permissions/**/*.perm", "permissions.config.json"],
+            "outputs": ["src/modules/permissions/generated/**"]
+        },
+        "migrate:create": {
+            "dependsOn": ["^migrate:create"]
+        },
+        "migrate:up": {
+            "dependsOn": ["^migrate:up"]
+        },
+        "build:data": {
+            "dependsOn": ["^migrate:up", "^build:datatypes"],
+            "cache": false
+        },
+        "migrate:down": {
+            "dependsOn": ["^migrate:down"],
+            "cache": false
+        },
+        "migrate:down:all": {
+            "dependsOn": ["^migrate:down:all"],
+            "cache": false
+        },
+        "rebuild:data": {
+            "dependsOn": ["^rebuild:data"],
+            "cache": false
+        },
+        "build:email:denylist": {
+            "dependsOn": ["^build:email:denylist"],
+            "cache": false
+        }
+    }
+}
