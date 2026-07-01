@@ -1,0 +1,462 @@
+:root {
+    --bg: #0b0d10;
+    --surface: #15181d;
+    --surface-2: #1d2128;
+    --border: #2a2f37;
+    --text: #e6e9ee;
+    --muted: #9aa3af;
+    --accent: #3b82f6;
+    --accent-hover: #2f6fe0;
+    --danger: #ef4444;
+    --ok: #22c55e;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.18);
+    color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg: #f4f6f9;
+        --surface: #ffffff;
+        --surface-2: #f1f3f6;
+        --border: #e3e7ec;
+        --text: #11151b;
+        --muted: #5b636e;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+        color-scheme: light;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+a {
+    color: var(--accent);
+}
+
+.app {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 28px 20px 72px;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+header.bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 26px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.logo {
+    font-size: 20px;
+    line-height: 1;
+}
+
+header.bar h1 {
+    font-size: 18px;
+    margin: 0;
+    letter-spacing: 0.2px;
+}
+
+header.bar .spacer {
+    flex: 1;
+}
+
+.account {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+/* Compact header controls override the full-width form defaults. */
+header.bar select.account-switch {
+    width: auto;
+    max-width: 240px;
+    margin: 0;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+header.bar button.compact {
+    width: auto;
+    white-space: nowrap;
+    padding: 7px 12px;
+    font-size: 13px;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: var(--surface);
+    white-space: nowrap;
+}
+
+.badge.ok {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+/* ── Cards ──────────────────────────────────────────────── */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+    margin-bottom: 16px;
+}
+
+.card.narrow {
+    max-width: 400px;
+    margin: 9vh auto 0;
+    padding: 26px;
+}
+
+.card h2 {
+    margin: 0 0 4px;
+    font-size: 16px;
+}
+
+.card p.sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+
+.card-head h2 {
+    margin: 0;
+}
+
+/* ── Stat cards ─────────────────────────────────────────── */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+@media (max-width: 640px) {
+    .stats {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.card.stat {
+    margin: 0;
+    padding: 18px;
+}
+
+.stat-value {
+    font-size: 26px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+}
+
+.stat-label {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+}
+
+/* ── Backup panel ───────────────────────────────────────── */
+.card.panel {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.panel-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.pulse {
+    color: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 0.4;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+
+/* ── Recent strip ───────────────────────────────────────── */
+.strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+}
+
+.thumb {
+    position: relative;
+    aspect-ratio: 1;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    display: block;
+}
+
+.thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    background: var(--surface-2);
+}
+
+.thumb .fav {
+    position: absolute;
+    top: 5px;
+    right: 6px;
+    font-size: 12px;
+    color: #fff;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+
+/* ── Forms / buttons ────────────────────────────────────── */
+label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 6px;
+}
+
+input[type='text'],
+input[type='password'],
+select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    margin-bottom: 14px;
+}
+
+/* Password field with an inline show/hide toggle. */
+.password-field {
+    position: relative;
+    margin-bottom: 14px;
+}
+
+.password-field input[type='text'],
+.password-field input[type='password'] {
+    margin-bottom: 0;
+    padding-right: 44px;
+}
+
+.password-field .toggle-visibility {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    background: none;
+    border: none;
+    border-radius: 0 8px 8px 0;
+    color: var(--muted);
+}
+
+.password-field .toggle-visibility:hover {
+    color: var(--text);
+    background: none;
+}
+
+input:focus,
+select:focus,
+button:focus-visible,
+a:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+}
+
+button {
+    font: inherit;
+    cursor: pointer;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    padding: 9px 14px;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+    background: var(--border);
+}
+
+button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    width: 100%;
+}
+
+button.primary.compact {
+    width: auto;
+    white-space: nowrap;
+}
+
+button.primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.tabs button {
+    flex: 1;
+    background: transparent;
+}
+
+.tabs button.active {
+    background: var(--surface-2);
+    border-color: var(--accent);
+}
+
+.footer-row {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 22px;
+}
+
+button.danger {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+}
+
+button.danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+/* ── Accounts admin ─────────────────────────────────────── */
+.account-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+button.link {
+    width: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+button.link:hover:not(:disabled) {
+    background: transparent;
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.account-row-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.account-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.account-row-actions button {
+    width: auto;
+    padding: 7px 12px;
+    font-size: 13px;
+}
+
+.account-row-actions .spacer {
+    flex: 1;
+}
+
+/* ── Messages / states ──────────────────────────────────── */
+.error {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 16px;
+}
+
+.muted {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 40px 0;
+}
+
+.spinner {
+    color: var(--muted);
+    padding: 36px;
+    text-align: center;
+}

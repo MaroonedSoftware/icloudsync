@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="iCloud Sync">
+    <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#5AC8FA" />
+            <stop offset="1" stop-color="#1E6FE0" />
+        </linearGradient>
+        <linearGradient id="arrows" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#1E6FE0" />
+            <stop offset="1" stop-color="#0B4FB8" />
+        </linearGradient>
+    </defs>
+
+    <!-- App-icon background -->
+    <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)" />
+
+    <!-- Cloud (FontAwesome cloud glyph, 640x512), scaled and centered -->
+    <path
+        transform="translate(76 118) scale(0.5625)"
+        d="M537.6 226.6c4.1-10.7 6.4-22.4 6.4-34.6 0-53-43-96-96-96-19.7 0-38.1 6-53.3 16.2C367 64.2 315.3 32 256 32c-88.4 0-160 71.6-160 160 0 2.7 .1 5.4 .2 8.1C40.2 219.8 0 273.2 0 336c0 79.5 64.5 144 144 144h368c70.7 0 128-57.3 128-128 0-61.9-44-113.6-102.4-125.4z"
+        fill="#FFFFFF" />
+
+    <!-- Sync arrows (Material "sync" glyph, 24x24), centered in the cloud body -->
+    <path
+        transform="translate(191 226) scale(5.42)"
+        d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"
+        fill="url(#arrows)" />
+</svg>

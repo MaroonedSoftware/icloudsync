@@ -1,0 +1,36 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(pnpm test *)",
+            "Bash(pnpm vitest:*)",
+            "Bash(pnpm exec vitest *)",
+            "Bash(pnpm exec tsc *)",
+            "Bash(npx tsc *)",
+            "Bash(pnpm tsc *)",
+            "Bash(tsc --noEmit*)",
+            "Bash(./node_modules/.bin/tsc --noEmit*)",
+            "Bash(../../node_modules/.bin/tsc --noEmit*)",
+            "Bash(node_modules/.bin/tsc --noEmit*)",
+            "Bash(vitest run*)",
+            "Bash(./node_modules/.bin/vitest run*)",
+            "Bash(../../node_modules/.bin/vitest run*)",
+            "Bash(node_modules/.bin/vitest run*)",
+            "mcp__codebase-memory-mcp__get_code_snippet",
+            "mcp__codebase-memory-mcp__search_graph",
+            "mcp__codebase-memory-mcp__search_code",
+            "mcp__codebase-memory-mcp__index_status",
+            "mcp__codebase-memory-mcp__get_architecture",
+            "mcp__codebase-memory-mcp__list_projects",
+            "mcp__Claude_in_Chrome__read_console_messages",
+            "mcp__Claude_Preview__preview_screenshot",
+            "mcp__Claude_Preview__preview_console_logs",
+            "mcp__Claude_Preview__preview_snapshot",
+            "mcp__Claude_Preview__preview_network",
+            "mcp__Claude_Preview__preview_list",
+            "mcp__Claude_Preview__preview_logs",
+            "mcp__Claude_Preview__preview_start",
+            "mcp__Claude_Preview__preview_stop",
+            "mcp__ccd_session__mark_chapter"
+        ]
+    }
+}

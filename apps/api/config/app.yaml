@@ -1,0 +1,22 @@
+# Layered application config. Values are `${env:VAR}` placeholders resolved at
+# load time by @maroonedsoftware/appconfig's AppConfigResolverEnv (see
+# src/modules/config/app.config.ts). This file is the single source of truth for
+# which environment variables configure the app; per-module classes
+# (ICloudConfig, HttpConfig) validate their section with zod and apply defaults.
+#
+# A missing variable resolves to an empty string, which each section treats as
+# "unset" so its default (or required-field error) applies.
+# User-facing settings (account, photo layout, sync schedule) are NOT here —
+# they live in the database (app_settings) and are edited via the UI/API. Only
+# secrets and infra that must exist before the DB is reachable belong in env.
+icloud:
+  photosDir: "${env:ICLOUD_PHOTOS_DIR}"
+  encryptionSecret: "${env:ICLOUD_ENCRYPTION_SECRET}"
+  encryptionSalt: "${env:ICLOUD_ENCRYPTION_SALT}"
+http:
+  port: "${env:PORT}"
+database:
+  url: "${env:DATABASE_URL}"
+web:
+  # Directory of the built SPA (apps/web/dist) to serve. Unset = API only.
+  root: "${env:WEB_ROOT}"

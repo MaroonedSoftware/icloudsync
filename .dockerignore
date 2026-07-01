@@ -1,0 +1,17 @@
+# Keep the build context small and deterministic — install deps fresh in-image.
+**/node_modules
+**/dist
+**/.turbo
+.turbo
+.pnpm-store
+.git
+.gitignore
+**/*.log
+**/.DS_Store
+.claude
+.env
+.env.*
+**/coverage
+Dockerfile
+.dockerignore
+docker-compose.yml

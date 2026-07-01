@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!--
+  Unraid (Community Applications) template for iCloud Sync.
+
+  Postgres is NOT bundled — install a PostgreSQL container first and point
+  DATABASE_URL at it (see "Run on Unraid" in the README). Import this template
+  via the Docker tab → Add Container → Template, or host the raw file so it can
+  be added as a private CA template repository.
+-->
+<Container version="2">
+    <Name>iCloudSync</Name>
+    <Repository>ghcr.io/maroonedsoftware/icloudsync:latest</Repository>
+    <Registry>https://github.com/MaroonedSoftware/icloudsync/pkgs/container/icloudsync</Registry>
+    <Network>bridge</Network>
+    <MyIP/>
+    <Shell>sh</Shell>
+    <Privileged>false</Privileged>
+    <Support>https://github.com/MaroonedSoftware/icloudsync/issues</Support>
+    <Project>https://github.com/MaroonedSoftware/icloudsync</Project>
+    <Overview>Self-hosted service that signs into iCloud, mirrors your Photos library into Postgres, and serves a web UI to browse it and trigger syncs. API, background sync worker, and UI run in one container.&#xD;&#xD;Requires a separate PostgreSQL container: set DATABASE_URL to its connection string. Set ICLOUD_ENCRYPTION_SECRET to a long random string (openssl rand -hex 32). Migrations run automatically on first start. Open the WebUI, sign in with your Apple ID, and complete 2FA once.</Overview>
+    <Category>Backup: MediaApp:Photos Tools:</Category>
+    <WebUI>http://[IP]:[PORT:8930]/</WebUI>
+    <TemplateURL>https://raw.githubusercontent.com/MaroonedSoftware/icloudsync/main/docker/unraid-template.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/MaroonedSoftware/icloudsync/main/apps/web/public/icon.png</Icon>
+    <ExtraParams/>
+    <PostArgs/>
+    <DateInstalled>0</DateInstalled>
+    <DonateText/>
+    <DonateLink/>
+    <Description>Self-hosted iCloud Photos backup. Requires an external PostgreSQL container (set DATABASE_URL).</Description>
+
+    <Config Name="WebUI Port" Target="8930" Default="8930" Mode="tcp" Description="Host port for the web UI and API. Change the left/host value to whatever is free on your server; the WebUI link follows it automatically." Type="Port" Display="always" Required="true" Mask="false">8930</Config>
+
+    <Config Name="Photos" Target="/data/photos" Default="/mnt/user/photos/icloud" Mode="rw" Description="Where the backed-up original photo files are written. The only persistent app volume — everything else (settings, encrypted session) lives in Postgres." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/photos/icloud</Config>
+
+    <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="postgres://postgres:CHANGE_ME@HOST_IP:5432/icloudsync?sslmode=disable" Mode="" Description="Postgres connection string for your separate PostgreSQL container. Use the Unraid host LAN IP (or the container name on a shared custom network), NOT localhost." Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+    <Config Name="ICLOUD_ENCRYPTION_SECRET" Target="ICLOUD_ENCRYPTION_SECRET" Default="" Mode="" Description="Secret used to derive the AES key that encrypts the stored iCloud session. Use a long random string (openssl rand -hex 32). Changing it forces a re-login." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+    <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that should own the backed-up photo files. 99 = Unraid 'nobody'." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+
+    <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that should own the backed-up photo files. 100 = Unraid 'users'." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+
+    <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="Permission mask for newly written photo files." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+</Container>

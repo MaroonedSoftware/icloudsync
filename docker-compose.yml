@@ -1,0 +1,44 @@
+# Self-hosted iCloud Sync: the combined API+worker+UI container plus Postgres.
+# Copy .env.example to .env and set a strong encryption secret, then
+# `docker compose up --build`. The UI is on http://localhost:8930 — sign in and
+# pick your settings there. The encrypted session lives in Postgres, so the only
+# persistent volumes are the database and the backed-up photo files.
+services:
+    postgres:
+        image: postgres:16-alpine
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: icloudsync
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d icloudsync']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        depends_on:
+            postgres:
+                condition: service_healthy
+        environment:
+            DATABASE_URL: postgres://postgres:postgres@postgres:5432/icloudsync?sslmode=disable
+            ICLOUD_ENCRYPTION_SECRET: ${ICLOUD_ENCRYPTION_SECRET}
+            # Where the backed-up photo files are written (persisted on a volume).
+            ICLOUD_PHOTOS_DIR: /data/photos
+            # Account, photo layout, sync schedule, and the encrypted session all
+            # live in the database — configured in the web UI, not via env vars.
+        volumes:
+            - photos_data:/data/photos
+        ports:
+            - '8930:8930'
+        restart: unless-stopped
+
+volumes:
+    pgdata:
+    photos_data:

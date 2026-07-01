@@ -1,0 +1,35 @@
+{
+    "name": "@icloudsync/icloud",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "lint": "eslint --fix",
+        "format": "prettier --write .",
+        "test": "vitest run",
+        "login:live": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/login.ts",
+        "photos:probe": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/photos.probe.ts"
+    },
+    "devDependencies": {
+        "@repo/config-eslint": "workspace:*",
+        "@repo/config-typescript": "workspace:*",
+        "@swc-node/register": "^1.11.1",
+        "@swc/core": "^1.15.43",
+        "@types/node": "^26.0.1",
+        "prettier": "^3.9.4",
+        "typescript": "^6.0.3",
+        "vitest": "^4.1.9"
+    }
+}
