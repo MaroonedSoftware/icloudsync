@@ -18,7 +18,9 @@ RUN pnpm build
 
 # Produce a self-contained, production-only deployment of the API with its
 # workspace deps (incl. the built @icloudsync/icloud) flattened into node_modules.
-RUN pnpm --filter=@maroonedsoftware/icloudsync-api deploy --prod /prod/api
+# `--legacy`: pnpm 10+ only deploys from workspaces with inject-workspace-packages;
+# this repo uses standard symlinked deps, so opt into the pre-v10 deploy behaviour.
+RUN pnpm --filter=@maroonedsoftware/icloudsync-api deploy --prod --legacy /prod/api
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
