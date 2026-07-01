@@ -19,7 +19,7 @@
             "persistent": true
         },
         "test": {
-            "dependsOn": ["^test"]
+            "dependsOn": ["^build"]
         },
         "build:datatypes": {
             "dependsOn": ["^build:datatypes"]

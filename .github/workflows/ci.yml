@@ -69,7 +69,7 @@ jobs:
               run: pnpm install --frozen-lockfile
 
             - name: Run database migrations
-              run: pnpm --filter @icloudsync/api migrate:up
+              run: pnpm --filter @maroonedsoftware/icloudsync-api migrate:up
 
             - name: Lint
               run: pnpm lint

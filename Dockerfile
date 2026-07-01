@@ -18,7 +18,7 @@ RUN pnpm build
 
 # Produce a self-contained, production-only deployment of the API with its
 # workspace deps (incl. the built @icloudsync/icloud) flattened into node_modules.
-RUN pnpm --filter=@icloudsync/api deploy --prod /prod/api
+RUN pnpm --filter=@maroonedsoftware/icloudsync-api deploy --prod /prod/api
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
