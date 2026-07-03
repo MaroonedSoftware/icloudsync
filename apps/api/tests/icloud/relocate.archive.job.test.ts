@@ -10,9 +10,13 @@ const silentLogger: Logger = { error() {}, warn() {}, info() {}, debug() {}, tra
 class FakeArchive {
     readonly moves: Array<{ from: string; to: string }> = [];
     readonly failOn = new Set<string>();
+    /** Sidecar keys that actually exist; an absent `.xmp` source is a no-op, as in the real archive. */
+    readonly sidecars = new Set<string>();
     reprefix = (key: string, from: string, to: string): string | null => (key.startsWith(`${from}/`) ? `${to}/${key.slice(from.length + 1)}` : null);
     move = (from: string, to: string): Promise<void> => {
         if (this.failOn.has(from)) return Promise.reject(new Error(`storage down: ${from}`));
+        // The job also tries to move each asset's `<key>.xmp` sidecar; a missing one is a silent no-op.
+        if (from.endsWith('.xmp') && !this.sidecars.has(from)) return Promise.resolve();
         this.moves.push({ from, to });
         return Promise.resolve();
     };
@@ -65,6 +69,19 @@ describe('RelocateArchiveJob', () => {
             { recordName: 'B', key: 'family/B.jpg' },
         ]);
         expect(status.states).toEqual([{ error: null, resumeFrom: null }]); // success clears the error and the resume marker
+    });
+
+    it("carries an asset's XMP sidecar along to the new prefix", async () => {
+        const { job, archive, store } = make();
+        store.backed.set('A', { checksum: 'a', key: `${ACCOUNT_ID}/A.jpg` });
+        archive.sidecars.add(`${ACCOUNT_ID}/A.jpg.xmp`); // A has a sidecar; it should move with it
+
+        await job.run({ accountId: ACCOUNT_ID, fromPrefix: ACCOUNT_ID, toPrefix: 'family' });
+
+        expect(archive.moves).toEqual([
+            { from: `${ACCOUNT_ID}/A.jpg`, to: 'family/A.jpg' },
+            { from: `${ACCOUNT_ID}/A.jpg.xmp`, to: 'family/A.jpg.xmp' },
+        ]);
     });
 
     it('leaves files that are not under the old prefix (already relocated or custom key)', async () => {

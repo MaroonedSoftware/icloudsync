@@ -6,6 +6,9 @@ import { SettingsService } from '../../settings/settings.service.js';
 import { PhotoArchive } from '../storage/photo.archive.js';
 import { layoutGroup, type PhotoLayout } from '../storage/photo.layout.js';
 import { namingLeaf, shortHash, withSuffix, type PhotoNaming } from '../storage/photo.naming.js';
+import { destinationNeedsAlbums, filesystemDestination, type Destination } from '../storage/photo.destination.js';
+import { buildSidecar, sidecarKey } from '../storage/photo.sidecar.js';
+import { ImmichUploader } from '../storage/immich.uploader.js';
 import type { BackedUpAsset, PhotoStore } from './photos.repository.js';
 
 /** The pg-boss queue name for the photo-sync job. pg-boss only allows
@@ -159,6 +162,9 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         private readonly accounts?: AccountSource,
         /** Sleep between rate-limit deferrals; injectable so tests need not wait on real timers. */
         private readonly wait: (ms: number, signal?: AbortSignal) => Promise<void> = delay,
+        /** Builds the Immich uploader for an Immich destination; injectable so tests can stub the API. */
+        private readonly immichFor: (dest: Extract<Destination, { kind: 'immich' }>, deviceId: string) => ImmichUploader = (dest, deviceId) =>
+            ImmichUploader.create(dest, deviceId),
     ) {
         super();
     }
@@ -211,18 +217,17 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         // Skip set (+ existing keys) so re-runs don't re-download unchanged originals.
         const backedUp = backupBytes ? await this.store.backedUp(accountId) : new Map<string, BackedUpAsset>();
         const photos = await this.icloud.photos(accountId, payload.zoneName);
-        // Effective settings resolve most-specific first: an explicit per-run
-        // payload override, else the account's own override, else the global default.
-        const override = (await this.accounts?.photoSettings(accountId)) ?? { layout: null, naming: null };
-        const layout = payload.layout ?? override.layout ?? (await this.settings.photosLayout());
-        const naming = payload.naming ?? override.naming ?? (await this.settings.photosNaming());
+        const destination = await this.resolveDestination(accountId, payload);
+        // For the Immich destination, an uploader holds the connection + album cache for this run.
+        const uploader = destination.kind === 'immich' ? this.immichFor(destination, accountId) : undefined;
         // One full pass over the library. Throws a RateLimitError (from paging,
         // album resolution, or a download) when iCloud throttles us past the
         // client's own 429 retries; the defer loop below waits it out and resumes.
         // Idempotent, so a resumed pass skips already-archived originals.
         const runPass = async (): Promise<void> => {
-            // For album layout, resolve which album each asset belongs to up front.
-            const albums = backupBytes && layout === 'album' ? await this.buildAlbumMap(photos) : new Map<string, string>();
+            // Resolve which album each asset belongs to up front when the destination
+            // needs it (album layout, XMP sidecars, or Immich album recreation).
+            const albums = backupBytes && destinationNeedsAlbums(destination) ? await this.buildAlbumMap(photos) : new Map<string, string>();
             const albumOf = (recordName: string): string | undefined => albums.get(recordName);
 
             let batch: PhotoAsset[] = [];
@@ -235,7 +240,7 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
                 if (backupBytes) {
                     for (const asset of batch) {
                         if (signal?.aborted) break; // stop downloading mid-batch when cancelled
-                        if (await this.backup(accountId, prefix, asset, backedUp, layout, naming, albumOf)) archived += 1;
+                        if (await this.backup(accountId, prefix, asset, backedUp, destination, albumOf, uploader)) archived += 1;
                     }
                 }
                 this.logger.info(`[${SYNC_PHOTOS_JOB}] ${total} synced, ${archived} archived for ${label}`);
@@ -283,15 +288,32 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         }
     }
 
-    /** Download and archive an asset's original bytes unless an up-to-date copy exists. Returns whether it stored anything. */
+    /**
+     * Resolve the effective backup destination for this run. The destination
+     * (filesystem preset vs Immich) is a global setting; for the filesystem
+     * `custom` preset the layout/naming still resolve most-specific first (per-run
+     * payload override, else the account's own override, else the global default).
+     * Fixed presets and Immich ignore the per-account layout/naming overrides —
+     * the preset dictates the mechanics.
+     */
+    private async resolveDestination(accountId: string, payload: SyncPhotosPayload): Promise<Destination> {
+        const setting = await this.settings.destination();
+        if (setting.kind === 'immich') return setting;
+        const override = (await this.accounts?.photoSettings(accountId)) ?? { layout: null, naming: null };
+        const layout = payload.layout ?? override.layout ?? (await this.settings.photosLayout());
+        const naming = payload.naming ?? override.naming ?? (await this.settings.photosNaming());
+        return filesystemDestination(setting.preset, { layout, naming });
+    }
+
+    /** Download and back up an asset's original bytes unless an up-to-date copy exists. Returns whether it stored anything. */
     private async backup(
         accountId: string,
         prefix: string,
         asset: PhotoAsset,
         backedUp: Map<string, BackedUpAsset>,
-        layout: PhotoLayout,
-        naming: PhotoNaming,
+        destination: Destination,
         albumOf: (recordName: string) => string | undefined,
+        uploader?: ImmichUploader,
     ): Promise<boolean> {
         const original = pickOriginal(asset);
         if (!original) return false;
@@ -302,11 +324,14 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
 
         try {
             const bytes = await this.icloud.download(accountId, original.downloadURL);
-            const group = layoutGroup(layout, { recordName: asset.recordName, assetDate: asset.assetDate }, albumOf);
-            const leaf = namingLeaf(naming, { recordName: asset.recordName, filename: asset.filename, assetDate: asset.assetDate });
-            const key = await this.resolveKey(prefix, leaf, group, asset.recordName, naming, existing?.key ?? null);
-            const size = await this.archive.store(key, bytes, original.fileType);
-            await this.store.markBackedUp(accountId, asset.recordName, { key, size, checksum });
+            // The recorded backup key is either a storage key (filesystem) or the
+            // Immich asset id — either way it's what a re-sync checks to skip work.
+            const key =
+                destination.kind === 'immich'
+                    ? await this.uploadToImmich(asset, bytes, original.fileType, albumOf, uploader)
+                    : await this.archiveToDisk(prefix, asset, bytes, original.fileType, destination, albumOf, existing?.key ?? null);
+            if (key === null) return false;
+            await this.store.markBackedUp(accountId, asset.recordName, { key, size: bytes.byteLength, checksum });
             backedUp.set(asset.recordName, { checksum, key });
             return true;
         } catch (error) {
@@ -316,6 +341,54 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
             this.logger.warn(`[${SYNC_PHOTOS_JOB}] backup failed for ${asset.recordName}: ${String(error)}`);
             return false;
         }
+    }
+
+    /** Archive bytes to the filesystem under the chosen layout/naming, writing an XMP sidecar when the preset asks for one. Returns the storage key. */
+    private async archiveToDisk(
+        prefix: string,
+        asset: PhotoAsset,
+        bytes: Uint8Array,
+        contentType: string | undefined,
+        destination: Extract<Destination, { kind: 'filesystem' }>,
+        albumOf: (recordName: string) => string | undefined,
+        recordedKey: string | null,
+    ): Promise<string> {
+        const group = layoutGroup(destination.layout, { recordName: asset.recordName, assetDate: asset.assetDate }, albumOf);
+        const leaf = namingLeaf(destination.naming, { recordName: asset.recordName, filename: asset.filename, assetDate: asset.assetDate });
+        const key = await this.resolveKey(prefix, leaf, group, asset.recordName, destination.naming, recordedKey);
+        await this.archive.store(key, bytes, contentType);
+        if (destination.sidecars) await this.writeSidecar(key, asset, albumOf);
+        return key;
+    }
+
+    /** Upload bytes into Immich (favorite + album reconciled by the uploader). Returns the Immich asset id, or `null` if no uploader is wired. */
+    private async uploadToImmich(
+        asset: PhotoAsset,
+        bytes: Uint8Array,
+        contentType: string | undefined,
+        albumOf: (recordName: string) => string | undefined,
+        uploader?: ImmichUploader,
+    ): Promise<string | null> {
+        if (!uploader) return null;
+        const result = await uploader.backup(asset, bytes, contentType, albumOf(asset.recordName));
+        return result.id;
+    }
+
+    /**
+     * Write an XMP sidecar (`<key>.xmp`) carrying the favorite rating, album
+     * membership, and capture date for an Immich external-library scan. A no-op
+     * when the asset has nothing worth recording (see {@link buildSidecar}).
+     */
+    private async writeSidecar(key: string, asset: PhotoAsset, albumOf: (recordName: string) => string | undefined): Promise<void> {
+        const album = albumOf(asset.recordName);
+        const xmp = buildSidecar({
+            filename: asset.filename,
+            assetDate: asset.assetDate,
+            isFavorite: asset.isFavorite,
+            albums: album ? [album] : [],
+        });
+        if (!xmp) return;
+        await this.archive.store(sidecarKey(key), new TextEncoder().encode(xmp), 'application/xml');
     }
 
     /**

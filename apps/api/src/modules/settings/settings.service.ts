@@ -2,6 +2,7 @@ import { Kysely, sql } from 'kysely';
 import { DEFAULT_SYNC_CRON } from '../icloud/sync/sync.defaults.js';
 import { PHOTO_LAYOUTS, type PhotoLayout } from '../icloud/storage/photo.layout.js';
 import { PHOTO_NAMINGS, type PhotoNaming } from '../icloud/storage/photo.naming.js';
+import { destinationSettingSchema, type DestinationSetting } from '../icloud/storage/photo.destination.js';
 import {
     DEFAULT_NOTIFICATION_SETTINGS,
     notificationSettingsSchema,
@@ -14,17 +15,29 @@ import type { DB, Json } from '../data/kysely.js';
 const KEY = {
     photosLayout: 'photos_layout',
     photosNaming: 'photos_naming',
+    destination: 'photos_destination',
     syncCron: 'sync_cron',
     notifications: 'notifications',
     /** Runtime throttle state: `{ [account]: lastNotifiedIso }`. Not part of {@link AppSettingsValues}. */
     reauthNotifyState: 'reauth_notify_state',
 } as const;
 
+/**
+ * Default destination for a fresh install (and the value a pre-destination
+ * install resolves to): the filesystem archive in `custom` mode, so whatever
+ * `photos_layout` / `photos_naming` were already configured are honored verbatim
+ * and nothing about existing backups changes. The UI nudges toward the `immich`
+ * preset from here.
+ */
+export const DEFAULT_DESTINATION: DestinationSetting = { kind: 'filesystem', preset: 'custom' };
+
 /** The user-facing settings, with defaults applied. */
 export interface AppSettingsValues {
-    /** On-disk photo organization (which folders assets are filed under). */
+    /** Where photos are backed up, and how they're organized once there. */
+    destination: DestinationSetting;
+    /** On-disk photo organization (which folders assets are filed under). Used by the `custom` filesystem preset. */
     photosLayout: PhotoLayout;
-    /** How archived photo filenames are composed within their layout folder. */
+    /** How archived photo filenames are composed within their layout folder. Used by the `custom` filesystem preset. */
     photosNaming: PhotoNaming;
     /** Sync schedule (cron). */
     syncCron: string;
@@ -36,7 +49,8 @@ export interface AppSettingsValues {
  * Runtime, user-editable configuration, persisted in Postgres (`app_settings`)
  * rather than the environment. Each setting is a `(key, jsonb value)` row;
  * unset keys fall back to a built-in default. This is the source of truth for
- * the photo layout and sync schedule (both global across accounts) — the set of
+ * the backup destination, photo layout, and sync schedule (all global across
+ * accounts) — the set of
  * accounts lives in `icloud_accounts` (see `AccountsService`), and secrets and
  * infra (DB URL, encryption secret, ports, storage paths) stay in env.
  */
@@ -73,6 +87,25 @@ export class SettingsService {
     }
     setPhotosNaming(naming: PhotoNaming): Promise<void> {
         return this.write(KEY.photosNaming, naming);
+    }
+
+    /**
+     * The backup destination config, with defaults applied. Falls back to
+     * {@link DEFAULT_DESTINATION} when unset or when a stored value fails to
+     * validate (e.g. a schema change), so the job always has a usable value.
+     */
+    async destination(): Promise<DestinationSetting> {
+        const stored = await this.read<unknown>(KEY.destination);
+        if (stored === undefined) return DEFAULT_DESTINATION;
+        const parsed = destinationSettingSchema.safeParse(stored);
+        return parsed.success ? parsed.data : DEFAULT_DESTINATION;
+    }
+
+    /** Validate and persist the backup destination config, returning the stored value. */
+    async setDestination(patch: DestinationSetting): Promise<DestinationSetting> {
+        const value = destinationSettingSchema.parse(patch);
+        await this.write(KEY.destination, value);
+        return value;
     }
 
     /** The sync schedule cron (default every 6 hours). */
@@ -127,12 +160,13 @@ export class SettingsService {
 
     /** All user-facing settings at once, with defaults applied. */
     async all(): Promise<AppSettingsValues> {
-        const [photosLayout, photosNaming, syncCron, notifications] = await Promise.all([
+        const [destination, photosLayout, photosNaming, syncCron, notifications] = await Promise.all([
+            this.destination(),
             this.photosLayout(),
             this.photosNaming(),
             this.syncCron(),
             this.notifications(),
         ]);
-        return { photosLayout, photosNaming, syncCron, notifications };
+        return { destination, photosLayout, photosNaming, syncCron, notifications };
     }
 }

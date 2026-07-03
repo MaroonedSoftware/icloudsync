@@ -12,6 +12,7 @@ import { RelocateRegistry } from '../icloud/sync/relocate.registry.js';
 import { inFlightJobId } from '../icloud/sync/job.status.js';
 import { PHOTO_LAYOUTS } from '../icloud/storage/photo.layout.js';
 import { PHOTO_NAMINGS } from '../icloud/storage/photo.naming.js';
+import { destinationPatchSchema } from '../icloud/storage/photo.destination.js';
 import { NotificationsService, notificationSettingsPatchSchema } from '../notifications/index.js';
 import { accountIdParam } from './route.helpers.js';
 
@@ -23,6 +24,7 @@ const cronSchema = z
 
 const updateSchema = z
     .object({
+        destination: destinationPatchSchema.optional(),
         photosLayout: z.enum(PHOTO_LAYOUTS).optional(),
         photosNaming: z.enum(PHOTO_NAMINGS).optional(),
         syncCron: cronSchema.optional(),
@@ -66,8 +68,10 @@ const accountSettingsSchema = z
  * and admin notifications, all global across accounts). Changing the schedule
  * reschedules the pg-boss cron immediately, so it takes effect without a restart.
  *
- * - `GET /icloud/settings` → `{ photosLayout, photosNaming, syncCron, notifications }`.
- * - `PATCH /icloud/settings` `{ photosLayout?, photosNaming?, syncCron?, notifications? }` → the updated settings.
+ * - `GET /icloud/settings` → `{ destination, photosLayout, photosNaming, syncCron, notifications }`.
+ * - `PATCH /icloud/settings` `{ destination?, photosLayout?, photosNaming?, syncCron?, notifications? }` → the updated settings.
+ *   `destination` is the backup target: `{ kind: 'filesystem', preset }` or a full
+ *   `{ kind: 'immich', baseUrl, apiKey, recreateAlbums, syncFavorites }` config.
  * - `POST /icloud/notifications/test` → `{ sent: true }` after delivering a test
  *   notification over the configured channel (422 with the error if it fails).
  *
@@ -89,11 +93,12 @@ export function icloudSettingsRouter() {
         const accounts = container.get(AccountsService);
         const settings = container.get(SettingsService);
         const relocate = container.get(RelocateRegistry);
-        const [override, account, photosLayout, photosNaming, relocatingId] = await Promise.all([
+        const [override, account, photosLayout, photosNaming, destination, relocatingId] = await Promise.all([
             accounts.photoSettings(accountId),
             accounts.getById(accountId),
             settings.photosLayout(),
             settings.photosNaming(),
+            settings.destination(),
             inFlightJobId(container.get(JobBroker), RELOCATE_ARCHIVE_JOB, relocate.jobId(accountId)),
         ]);
         return {
@@ -105,6 +110,9 @@ export function icloudSettingsRouter() {
             // The last move's failure summary, or null if it succeeded / none ran.
             relocationError: account?.relocationError ?? null,
             defaults: { photosLayout, photosNaming },
+            // The global destination — the per-account layout/naming overrides only
+            // bite when it is the filesystem `custom` preset.
+            destination,
         };
     };
 
@@ -115,8 +123,9 @@ export function icloudSettingsRouter() {
 
     router.patch('/icloud/settings', json, async ctx => {
         const settings = ctx.container.get(SettingsService);
-        const { photosLayout, photosNaming, syncCron, notifications } = await parseAndValidate(ctx.body, updateSchema);
+        const { destination, photosLayout, photosNaming, syncCron, notifications } = await parseAndValidate(ctx.body, updateSchema);
 
+        if (destination !== undefined) await settings.setDestination(destination);
         if (photosLayout !== undefined) await settings.setPhotosLayout(photosLayout);
         if (photosNaming !== undefined) await settings.setPhotosNaming(photosNaming);
         if (syncCron !== undefined) {

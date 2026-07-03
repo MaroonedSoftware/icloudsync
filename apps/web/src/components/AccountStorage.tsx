@@ -108,6 +108,10 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
 
     const loaded = settings !== undefined;
     const defaults = settings?.defaults;
+    const destination = settings?.destination;
+    const isFilesystem = destination?.kind === 'filesystem';
+    // Per-account layout/naming overrides only bite under the filesystem `custom` preset.
+    const isCustomFs = destination?.kind === 'filesystem' && destination.preset === 'custom';
 
     return (
         <div className="card">
@@ -130,40 +134,54 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
             )}
             {!relocating && !relocationError && moved && <div className="muted">✓ Existing files were moved to the new folder.</div>}
 
-            <label htmlFor="acct-prefix">Archive folder</label>
-            <input
-                id="acct-prefix"
-                type="text"
-                value={prefix}
-                disabled={!loaded}
-                placeholder="Account id (default)"
-                onChange={e => edit(setPrefix)(e.target.value)}
-            />
-            <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
-                Top-level folder this account's photos are archived under. Leave blank to use the account id.
-                Give each account a <strong>distinct</strong> folder — two accounts sharing one can overwrite each other's files.
-                Changing this moves already-backed-up files to the new folder.
-            </p>
+            {isFilesystem && (
+                <>
+                    <label htmlFor="acct-prefix">Archive folder</label>
+                    <input
+                        id="acct-prefix"
+                        type="text"
+                        value={prefix}
+                        disabled={!loaded}
+                        placeholder="Account id (default)"
+                        onChange={e => edit(setPrefix)(e.target.value)}
+                    />
+                    <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
+                        Top-level folder this account's photos are archived under. Leave blank to use the account id.
+                        Give each account a <strong>distinct</strong> folder — two accounts sharing one can overwrite each other's files.
+                        Changing this moves already-backed-up files to the new folder.
+                    </p>
+                </>
+            )}
 
-            <label htmlFor="acct-layout">Photo organization</label>
-            <select id="acct-layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout | '')}>
-                <option value={INHERIT}>Use default{defaults ? ` (${layoutLabel(defaults.photosLayout)})` : ''}</option>
-                {LAYOUTS.map(l => (
-                    <option key={l.value} value={l.value}>
-                        {l.label}
-                    </option>
-                ))}
-            </select>
+            {isCustomFs ? (
+                <>
+                    <label htmlFor="acct-layout">Photo organization</label>
+                    <select id="acct-layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout | '')}>
+                        <option value={INHERIT}>Use default{defaults ? ` (${layoutLabel(defaults.photosLayout)})` : ''}</option>
+                        {LAYOUTS.map(l => (
+                            <option key={l.value} value={l.value}>
+                                {l.label}
+                            </option>
+                        ))}
+                    </select>
 
-            <label htmlFor="acct-naming">File naming</label>
-            <select id="acct-naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming | '')}>
-                <option value={INHERIT}>Use default{defaults ? ` (${namingLabel(defaults.photosNaming)})` : ''}</option>
-                {NAMINGS.map(n => (
-                    <option key={n.value} value={n.value}>
-                        {n.label}
-                    </option>
-                ))}
-            </select>
+                    <label htmlFor="acct-naming">File naming</label>
+                    <select id="acct-naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming | '')}>
+                        <option value={INHERIT}>Use default{defaults ? ` (${namingLabel(defaults.photosNaming)})` : ''}</option>
+                        {NAMINGS.map(n => (
+                            <option key={n.value} value={n.value}>
+                                {n.label}
+                            </option>
+                        ))}
+                    </select>
+                </>
+            ) : (
+                <p className="muted">
+                    {destination?.kind === 'immich'
+                        ? 'Photos for this account upload to Immich, which owns organization — there is nothing to override here.'
+                        : 'Organization follows the global preset. Switch the global setting to the “Custom” filesystem preset to override layout and naming per account.'}
+                </p>
+            )}
 
             <button className="primary compact" onClick={save} disabled={saving || !dirty || !loaded} style={{ marginTop: 12 }}>
                 {saving ? 'Saving…' : 'Save storage settings'}

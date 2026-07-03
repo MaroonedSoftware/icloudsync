@@ -63,6 +63,14 @@ export type PhotoLayout = 'flat' | 'date' | 'album';
 
 export type PhotoNaming = 'clean' | 'datetime' | 'hash';
 
+/** A filesystem organization preset (see the server's `photo.destination`). */
+export type FilesystemPreset = 'immich' | 'browsable' | 'custom';
+
+/** Where photos are backed up, and how they're organized once there. */
+export type Destination =
+    | { kind: 'filesystem'; preset: FilesystemPreset }
+    | { kind: 'immich'; baseUrl: string; apiKey: string; recreateAlbums: boolean; syncFavorites: boolean };
+
 export type NotificationChannel = 'none' | 'webhook' | 'email';
 
 export interface EmailSettings {
@@ -87,7 +95,11 @@ export interface NotificationSettings {
 }
 
 export interface AppSettings {
+    /** Where photos are backed up (filesystem preset vs Immich). */
+    destination: Destination;
+    /** On-disk layout, used by the filesystem `custom` preset. */
     photosLayout: PhotoLayout;
+    /** On-disk filename scheme, used by the filesystem `custom` preset. */
     photosNaming: PhotoNaming;
     syncCron: string;
     notifications: NotificationSettings;
@@ -107,6 +119,8 @@ export interface AccountSettings {
     /** The last move's failure summary, or `null` if it succeeded / none ran. */
     relocationError: string | null;
     defaults: { photosLayout: PhotoLayout; photosNaming: PhotoNaming };
+    /** The global destination; layout/naming overrides only apply under the filesystem `custom` preset. */
+    destination: Destination;
 }
 
 export interface Stats {
@@ -219,7 +233,7 @@ export const api = {
     cancelSync: (id: string) => request<{ cancelled: boolean }>(`${accountPath(id)}/sync/cancel`, { method: 'POST' }),
     stats: (id: string) => request<Stats>(`${accountPath(id)}/stats`),
     settings: () => request<AppSettings>('/icloud/settings'),
-    updateSettings: (patch: Partial<Pick<AppSettings, 'photosLayout' | 'photosNaming' | 'syncCron' | 'notifications'>>) =>
+    updateSettings: (patch: Partial<Pick<AppSettings, 'destination' | 'photosLayout' | 'photosNaming' | 'syncCron' | 'notifications'>>) =>
         request<AppSettings>('/icloud/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
     accountSettings: (id: string) => request<AccountSettings>(`${accountPath(id)}/settings`),
     /** Patch an account's layout/naming/prefix overrides; `null` (or `''` for the prefix) clears an override back to the default. */

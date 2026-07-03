@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react';
-import { api, type AppSettings, type NotificationChannel, type NotificationSettings, type PhotoLayout, type PhotoNaming } from '../api.js';
+import {
+    api,
+    type AppSettings,
+    type Destination,
+    type FilesystemPreset,
+    type NotificationChannel,
+    type NotificationSettings,
+    type PhotoLayout,
+    type PhotoNaming,
+} from '../api.js';
 import { scheduleLabel } from '../format.js';
 
 export const LAYOUTS: { value: PhotoLayout; label: string }[] = [
@@ -14,9 +23,33 @@ export const NAMINGS: { value: PhotoNaming; label: string }[] = [
     { value: 'hash', label: 'Name + id (IMG_0001~a1b2c3.HEIC)' },
 ];
 
+/** Filesystem organization presets, in the order shown. */
+export const PRESETS: { value: FilesystemPreset; label: string; hint: string }[] = [
+    {
+        value: 'immich',
+        label: 'Immich-ready',
+        hint: 'Flat folder, original filenames, plus an XMP sidecar per photo carrying favorites and album membership. Best when Immich reads this folder as an external library.',
+    },
+    {
+        value: 'browsable',
+        label: 'Browsable archive',
+        hint: 'A YYYY/YYYY-MM date tree with original filenames — for browsing the raw files yourself.',
+    },
+    {
+        value: 'custom',
+        label: 'Custom…',
+        hint: 'Choose the folder layout and filename scheme by hand.',
+    },
+];
+
 /** The human label for a layout/naming value (falls back to the raw value). */
 export const layoutLabel = (v: PhotoLayout): string => LAYOUTS.find(l => l.value === v)?.label ?? v;
 export const namingLabel = (v: PhotoNaming): string => NAMINGS.find(n => n.value === v)?.label ?? v;
+const presetHint = (v: FilesystemPreset): string => PRESETS.find(p => p.value === v)?.hint ?? '';
+
+/** A blank Immich destination, used when switching to the Immich destination. */
+const EMPTY_IMMICH: Extract<Destination, { kind: 'immich' }> = { kind: 'immich', baseUrl: '', apiKey: '', recreateAlbums: true, syncFavorites: true };
+const DEFAULT_DESTINATION: Destination = { kind: 'filesystem', preset: 'immich' };
 
 const CRON_PRESETS = [
     { value: '0 * * * *', label: 'Hourly' },
@@ -48,6 +81,7 @@ function notificationsPatch(n: NotificationSettings): NotificationSettings {
 
 /** Edit the database-backed settings (photo layout, file naming, sync schedule, admin notifications). */
 export function Settings({ onChange }: { onChange?: () => void }) {
+    const [destination, setDestination] = useState<Destination>(DEFAULT_DESTINATION);
     const [layout, setLayout] = useState<PhotoLayout>('flat');
     const [naming, setNaming] = useState<PhotoNaming>('clean');
     const [cron, setCron] = useState('0 */6 * * *');
@@ -61,6 +95,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
     const [testError, setTestError] = useState<string>();
 
     const apply = (s: AppSettings) => {
+        setDestination(s.destination ?? DEFAULT_DESTINATION);
         setLayout(s.photosLayout);
         setNaming(s.photosNaming);
         setCron(s.syncCron);
@@ -85,6 +120,14 @@ export function Settings({ onChange }: { onChange?: () => void }) {
             setSaved(false);
         };
 
+    // Switch destination kind, preserving any in-progress Immich fields when toggling back.
+    const setKind = (kind: Destination['kind']) =>
+        edit(setDestination)(kind === 'immich' ? (destination.kind === 'immich' ? destination : EMPTY_IMMICH) : DEFAULT_DESTINATION);
+    const setPreset = (preset: FilesystemPreset) => edit(setDestination)({ kind: 'filesystem', preset });
+    const editImmich = (patch: Partial<Extract<Destination, { kind: 'immich' }>>) => {
+        if (destination.kind === 'immich') edit(setDestination)({ ...destination, ...patch });
+    };
+
     const editNotifications = (patch: Partial<NotificationSettings>) => edit(setNotifications)({ ...notifications, ...patch });
     const editEmail = (patch: Partial<NonNullable<NotificationSettings['email']>>) =>
         editNotifications({ email: { ...EMPTY_EMAIL, ...notifications.email, ...patch } });
@@ -95,6 +138,8 @@ export function Settings({ onChange }: { onChange?: () => void }) {
         try {
             apply(
                 await api.updateSettings({
+                    destination,
+                    // Persist the raw layout/naming too so the filesystem `custom` preset keeps them.
                     photosLayout: layout,
                     photosNaming: naming,
                     syncCron: cron,
@@ -134,26 +179,90 @@ export function Settings({ onChange }: { onChange?: () => void }) {
 
             {error && <div className="error">{error}</div>}
 
-            <label htmlFor="layout">Default photo organization</label>
-            <select id="layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
-                {LAYOUTS.map(l => (
-                    <option key={l.value} value={l.value}>
-                        {l.label}
-                    </option>
-                ))}
+            <label htmlFor="destination">Where photos go</label>
+            <select id="destination" value={destination.kind} disabled={!loaded} onChange={e => setKind(e.target.value as Destination['kind'])}>
+                <option value="filesystem">Filesystem archive</option>
+                <option value="immich">Immich (upload via API)</option>
             </select>
 
-            <label htmlFor="naming">Default file naming</label>
-            <select id="naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
-                {NAMINGS.map(n => (
-                    <option key={n.value} value={n.value}>
-                        {n.label}
-                    </option>
-                ))}
-            </select>
-            <p className="muted" style={{ marginTop: -6 }}>
-                Defaults for every account. An account can override these on its own page. Applies to newly synced photos.
-            </p>
+            {destination.kind === 'filesystem' && (
+                <>
+                    <label htmlFor="preset">Organization</label>
+                    <select id="preset" value={destination.preset} disabled={!loaded} onChange={e => setPreset(e.target.value as FilesystemPreset)}>
+                        {PRESETS.map(p => (
+                            <option key={p.value} value={p.value}>
+                                {p.label}
+                            </option>
+                        ))}
+                    </select>
+                    <p className="muted" style={{ marginTop: -6 }}>
+                        {presetHint(destination.preset)}
+                    </p>
+
+                    {destination.preset === 'custom' && (
+                        <>
+                            <label htmlFor="layout">Folder layout</label>
+                            <select id="layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
+                                {LAYOUTS.map(l => (
+                                    <option key={l.value} value={l.value}>
+                                        {l.label}
+                                    </option>
+                                ))}
+                            </select>
+
+                            <label htmlFor="naming">File naming</label>
+                            <select id="naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
+                                {NAMINGS.map(n => (
+                                    <option key={n.value} value={n.value}>
+                                        {n.label}
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="muted" style={{ marginTop: -6 }}>
+                                An account can override the layout/naming on its own page. Applies to newly synced photos.
+                            </p>
+                        </>
+                    )}
+                </>
+            )}
+
+            {destination.kind === 'immich' && (
+                <>
+                    <label htmlFor="immich-url">Immich server URL</label>
+                    <input
+                        id="immich-url"
+                        type="url"
+                        value={destination.baseUrl}
+                        disabled={!loaded}
+                        spellCheck={false}
+                        placeholder="https://immich.example.com"
+                        onChange={e => editImmich({ baseUrl: e.target.value })}
+                    />
+
+                    <label htmlFor="immich-key">API key</label>
+                    <input
+                        id="immich-key"
+                        type="password"
+                        value={destination.apiKey}
+                        disabled={!loaded}
+                        autoComplete="new-password"
+                        placeholder="Immich → Account Settings → API Keys"
+                        onChange={e => editImmich({ apiKey: e.target.value })}
+                    />
+
+                    <label className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
+                        <input type="checkbox" checked={destination.recreateAlbums} disabled={!loaded} onChange={e => editImmich({ recreateAlbums: e.target.checked })} />
+                        <span>Recreate iCloud albums as Immich albums</span>
+                    </label>
+                    <label className="row" style={{ gap: 8, alignItems: 'center' }}>
+                        <input type="checkbox" checked={destination.syncFavorites} disabled={!loaded} onChange={e => editImmich({ syncFavorites: e.target.checked })} />
+                        <span>Mark iCloud favorites as favorites in Immich</span>
+                    </label>
+                    <p className="muted" style={{ marginTop: 6 }}>
+                        Immich owns storage: it dedupes by checksum and builds the timeline from each photo's metadata, so there's no folder layout to choose.
+                    </p>
+                </>
+            )}
 
             <label htmlFor="cron">Sync schedule (cron)</label>
             <input id="cron" type="text" value={cron} disabled={!loaded} spellCheck={false} onChange={e => edit(setCron)(e.target.value)} />

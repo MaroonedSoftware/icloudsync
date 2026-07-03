@@ -27,43 +27,39 @@ single Docker container (API + background worker + UI in one process).
 
 ### What gets backed up
 
-Each sync mirrors photo **metadata** into Postgres and downloads the **original
-bytes** of every asset into the photo archive (a `@maroonedsoftware/storage`
-backend — local disk by default at `ICLOUD_PHOTOS_DIR`, or S3/GCS). Both steps
-are idempotent: an asset's bytes are re-fetched only when its checksum changes,
-so re-runs resume rather than redo. The download proxy serves the archived copy
-when present and falls back to a live iCloud fetch otherwise.
+Each sync mirrors photo **metadata** into Postgres and, for a filesystem
+destination, downloads the **original bytes** of every asset into the photo
+archive (a `@maroonedsoftware/storage` backend — local disk by default at
+`ICLOUD_PHOTOS_DIR`, or S3/GCS). Both steps are idempotent: an asset's bytes are
+re-fetched only when its checksum changes, so re-runs resume rather than redo.
+The download proxy serves the archived copy when present and falls back to a live
+iCloud fetch otherwise.
 
-**On-disk organization** has two independent settings, both edited in the UI:
-which folders assets are filed under (`photos_layout`) and how each file is named
-within its folder (`photos_naming`). Files land directly in their layout folder
-(no per-photo id sub-folder), so the archive is browsable:
+**Where photos go** is one setting — a *destination* — edited in the UI. Rather
+than exposing raw folder/filename knobs, you pick an intent:
 
-| `photos_layout` | Folder under `ICLOUD_PHOTOS_DIR` |
+| Destination | What it does |
 |---|---|
-| `flat` (default) | `<account>/` |
-| `date` | `<account>/YYYY/YYYY-MM/` (by capture date) |
-| `album` | `<account>/<album>/` (photos in no album → `Unsorted/`) |
+| **Filesystem → Immich-ready** (default preset) | Flat archive, original filenames, plus an XMP sidecar (`<file>.xmp`) per favorite/album photo carrying its favorite rating and album membership. Optimized for an Immich **external library** mounted read-only over the archive — Immich builds the timeline from each file's own EXIF, so folders are left flat on purpose. |
+| **Filesystem → Browsable archive** | A `YYYY/YYYY-MM` date tree with original filenames, for browsing the raw files yourself. |
+| **Filesystem → Custom** | The advanced escape hatch: raw `photos_layout` (`flat` \| `date` \| `album`) × `photos_naming` (`clean` \| `datetime` \| `hash`) knobs. Pre-existing installs land here so their configured layout/naming are honored verbatim. |
+| **Immich (API upload)** | Uploads each asset straight into an Immich server via its API (`baseUrl` + `apiKey`). Immich owns storage — it dedupes by checksum, so re-syncs are cheap — and iCloud albums/favorites are reconciled as Immich albums/favorites (both toggleable). No layout/naming applies. |
 
-| `photos_naming` | Filename within the folder |
-|---|---|
-| `clean` (default) | `IMG_0001.HEIC` — original name; a `~<hash>` suffix is added only when a different photo already holds that name |
-| `datetime` | `20240315-143022_IMG_0001.HEIC` — capture timestamp prefixed; sorts chronologically |
-| `hash` | `IMG_0001~a1b2c3.HEIC` — a short per-photo id inserted before the extension; always unique |
+Under the **Custom** filesystem preset, `photos_layout` / `photos_naming` are the
+**global defaults** and each account can **override** either from its dashboard
+(or `PATCH /icloud/accounts/:accountId/settings`); an unset override inherits the
+default, resolving most-specific first (per-run payload override → account
+override → global default). The other presets and the Immich destination dictate
+the mechanics, so per-account layout/naming overrides don't apply there.
 
-`photos_layout` / `photos_naming` are the **global defaults**; each account can
-**override** either one from its dashboard (or `PATCH /icloud/accounts/:accountId/settings`),
-and an unset override inherits the default. The effective value for a sync
-resolves most-specific first: a per-run payload override, else the account's
-override, else the global default.
-
-`date` is free (uses metadata already synced). `album` pages each iCloud album to
-resolve membership (first album wins for a photo in several); if that lookup
-fails it degrades to `Unsorted/` rather than failing the backup. All three naming
-schemes are collision-safe, and the collision suffix is derived from the photo's
-stable record id so re-syncs stay idempotent.
+For the filesystem archive, files land directly in their layout folder (no
+per-photo id sub-folder) so it stays browsable, and all three naming schemes are
+collision-safe (the `~<hash>` suffix is derived from the photo's stable record id,
+so re-syncs stay idempotent). Album resolution (for the `album` layout, XMP
+sidecars, or Immich album recreation) pages each iCloud album, first album wins,
+and degrades to `Unsorted`/no-album rather than failing the backup.
 - **`apps/web`** — React + Vite SPA: sign-in (password + device/SMS 2FA), a
-  stats dashboard, recent backups, and a settings panel (layout, naming, schedule).
+  stats dashboard, recent backups, and a settings panel (destination, schedule).
 
 ### Configuration model
 
@@ -121,8 +117,10 @@ Secrets + infra only; everything user-facing is a DB setting (see above).
 The container also serves `GET /health` — a DB-backed readiness probe (`200`
 when Postgres answers, `503` otherwise) wired to the image's Docker `HEALTHCHECK`.
 
-Database-backed settings (UI / `PATCH /icloud/settings`): `photos_layout`
-(`flat` \| `date` \| `album`), `photos_naming`, `sync_cron`. Each account is a row
+Database-backed settings (UI / `PATCH /icloud/settings`): `photos_destination`
+(a filesystem preset or Immich config), `photos_layout` (`flat` \| `date` \|
+`album`) and `photos_naming` for the filesystem `custom` preset, and `sync_cron`.
+Each account is a row
 in `icloud_accounts` keyed by an auto-generated UUID (the Apple ID is a unique
 attribute); its encrypted session lives on that row (the `session` column) and
 the Argon2id salt in `app_settings`. Only the photo bytes use a volume, so a

@@ -1,6 +1,7 @@
 import { Job } from '@maroonedsoftware/jobbroker';
 import { Logger } from '@maroonedsoftware/logger';
 import { PhotoArchive } from '../storage/photo.archive.js';
+import { sidecarKey } from '../storage/photo.sidecar.js';
 import type { BackedUpAsset } from './photos.repository.js';
 
 /** The pg-boss queue name for the archive-relocation job. */
@@ -94,6 +95,10 @@ export class RelocateArchiveJob extends Job<RelocateArchivePayload> {
             if (!newKey) continue; // not under the old prefix (already relocated, or a custom key) — leave it
             try {
                 await this.archive.move(key, newKey);
+                // Carry the asset's XMP sidecar (immich preset) along with it. `move`
+                // treats a missing source as already-moved, so assets without a
+                // sidecar cost one cheap no-op rather than needing a lookup.
+                await this.archive.move(sidecarKey(key), sidecarKey(newKey));
                 await this.store.rekeyBackup(accountId, recordName, newKey);
                 moved += 1;
             } catch (error) {

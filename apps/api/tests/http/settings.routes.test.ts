@@ -14,6 +14,7 @@ import { NotificationsService } from '../../src/modules/notifications/index.js';
 import type { NotificationSettings, NotificationSettingsPatch } from '../../src/modules/notifications/index.js';
 import type { PhotoLayout } from '../../src/modules/icloud/storage/photo.layout.js';
 import type { PhotoNaming } from '../../src/modules/icloud/storage/photo.naming.js';
+import type { DestinationSetting } from '../../src/modules/icloud/storage/photo.destination.js';
 
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
@@ -25,8 +26,20 @@ class FakeSettings {
     naming: PhotoNaming = 'clean';
     cron = '0 */6 * * *';
     notifications: NotificationSettings = { channel: 'none', throttleHours: 24 };
+    destinationValue: DestinationSetting = { kind: 'filesystem', preset: 'custom' };
     all = () =>
-        Promise.resolve({ photosLayout: this.layout, photosNaming: this.naming, syncCron: this.cron, notifications: this.notifications });
+        Promise.resolve({
+            destination: this.destinationValue,
+            photosLayout: this.layout,
+            photosNaming: this.naming,
+            syncCron: this.cron,
+            notifications: this.notifications,
+        });
+    destination = () => Promise.resolve(this.destinationValue);
+    setDestination = (d: DestinationSetting) => {
+        this.destinationValue = d;
+        return Promise.resolve(d);
+    };
     photosLayout = () => Promise.resolve(this.layout);
     photosNaming = () => Promise.resolve(this.naming);
     setPhotosLayout = (l: PhotoLayout) => {
@@ -156,11 +169,29 @@ describe('icloud settings routes', () => {
         const res = await fetch(`${base}/icloud/settings`);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({
+            destination: { kind: 'filesystem', preset: 'custom' },
             photosLayout: 'flat',
             photosNaming: 'clean',
             syncCron: '0 */6 * * *',
             notifications: { channel: 'none', throttleHours: 24 },
         });
+    });
+
+    it('updates the destination to an Immich server', async () => {
+        const res = await patch({ destination: { kind: 'immich', baseUrl: 'https://immich.test', apiKey: 'secret' } });
+        expect(res.status).toBe(200);
+        expect(settings.destinationValue).toEqual({
+            kind: 'immich',
+            baseUrl: 'https://immich.test',
+            apiKey: 'secret',
+            recreateAlbums: true,
+            syncFavorites: true,
+        });
+    });
+
+    it('rejects an Immich destination with a bad URL', async () => {
+        const res = await patch({ destination: { kind: 'immich', baseUrl: 'nope', apiKey: 'k' } });
+        expect(res.status).toBe(422);
     });
 
     it('updates the photo layout', async () => {
@@ -231,6 +262,7 @@ describe('icloud settings routes', () => {
             relocating: false,
             relocationError: null,
             defaults: { photosLayout: 'date', photosNaming: 'hash' },
+            destination: { kind: 'filesystem', preset: 'custom' },
         });
     });
 

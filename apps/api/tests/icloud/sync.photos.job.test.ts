@@ -153,7 +153,28 @@ function source(opts: { authenticated: boolean; count: number; downloads?: strin
 
 const archive = (): PhotoArchive => new FakeArchive() as unknown as PhotoArchive;
 const settings = (layout: PhotoLayout = 'flat', naming: PhotoNaming = 'clean'): SettingsService =>
-    ({ photosLayout: async () => layout, photosNaming: async () => naming }) as unknown as SettingsService;
+    ({
+        // The filesystem `custom` preset resolves layout/naming from these, exercising the same paths as before.
+        destination: async () => ({ kind: 'filesystem', preset: 'custom' }),
+        photosLayout: async () => layout,
+        photosNaming: async () => naming,
+    }) as unknown as SettingsService;
+
+/** A settings stub with the filesystem `immich` preset (flat + clean + XMP sidecars). */
+const immichPresetSettings = (): SettingsService =>
+    ({
+        destination: async () => ({ kind: 'filesystem', preset: 'immich' }),
+        photosLayout: async () => 'flat',
+        photosNaming: async () => 'clean',
+    }) as unknown as SettingsService;
+
+/** A settings stub whose destination is an Immich server (upload path). */
+const immichSettings = (over: Partial<{ recreateAlbums: boolean; syncFavorites: boolean }> = {}): SettingsService =>
+    ({
+        destination: async () => ({ kind: 'immich', baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true, ...over }),
+        photosLayout: async () => 'flat',
+        photosNaming: async () => 'clean',
+    }) as unknown as SettingsService;
 
 /** A per-account source returning the given (possibly null) overrides for every account (prefix = the account id). */
 const accountSettings = (layout: PhotoLayout | null = null, naming: PhotoNaming | null = null): AccountSource => ({
@@ -343,6 +364,59 @@ describe('SyncPhotosJob', () => {
         await job.run({ batchSize: 10, layout: 'flat', naming: 'clean', accountId: 'me@icloud.com' });
 
         expect([...arc.stored.keys()]).toEqual(['me@icloud.com/photo-0.jpg']);
+    });
+
+    it('immich preset writes an XMP sidecar next to an album asset', async () => {
+        const store = new FakeStore();
+        const arc = new FakeArchive();
+        const albums: AlbumFixture[] = [{ recordName: 'alb-1', name: 'Vacation', assetIds: [0] }];
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 1, albums }), store, arc as unknown as PhotoArchive, silentLogger, immichPresetSettings());
+
+        await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
+
+        // Flat + clean bytes, plus a sidecar carrying the album membership.
+        expect([...arc.stored.keys()].sort()).toEqual(['me@icloud.com/photo-0.jpg', 'me@icloud.com/photo-0.jpg.xmp']);
+        const xmp = Buffer.from(arc.stored.get('me@icloud.com/photo-0.jpg.xmp')!).toString('utf-8');
+        expect(xmp).toContain('<rdf:li>Vacation</rdf:li>');
+        // The recorded backup key is the asset itself, not the sidecar.
+        expect(store.marks[0]!.backup.key).toBe('me@icloud.com/photo-0.jpg');
+    });
+
+    it('immich preset writes no sidecar for an ordinary photo (no album, not a favorite)', async () => {
+        const store = new FakeStore();
+        const arc = new FakeArchive();
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, immichPresetSettings());
+
+        await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
+
+        expect([...arc.stored.keys()]).toEqual(['me@icloud.com/photo-0.jpg']);
+    });
+
+    it('immich destination uploads via the uploader and records the returned asset id', async () => {
+        const store = new FakeStore();
+        const uploaded: Array<{ record: string; album?: string }> = [];
+        const fakeUploader = {
+            backup: async (asset: { recordName: string }, _bytes: Uint8Array, _ct: string | undefined, album?: string) => {
+                uploaded.push({ record: asset.recordName, album });
+                return { id: `immich-${asset.recordName}`, duplicate: false };
+            },
+        };
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 2 }),
+            store,
+            archive(),
+            silentLogger,
+            immichSettings(),
+            undefined,
+            undefined,
+            undefined,
+            () => fakeUploader as unknown as import('../../src/modules/icloud/storage/immich.uploader.js').ImmichUploader,
+        );
+
+        await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
+
+        expect(uploaded.map(u => u.record)).toEqual(['asset-0', 'asset-1']);
+        expect(store.marks.map(m => m.backup.key)).toEqual(['immich-asset-0', 'immich-asset-1']);
     });
 
     it('syncs the single account named in the payload', async () => {
