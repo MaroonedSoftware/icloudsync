@@ -2,11 +2,14 @@ import { HttpError } from '@maroonedsoftware/errors';
 import type { ServerKitContext } from '@maroonedsoftware/koa';
 import { mapICloudError } from './error.mapping.js';
 
-/** The Apple ID from the route path (koa-router already URL-decodes it), trimmed; throws HTTP 400 (`reason: 'account_required'`) if shorter than 3 characters. */
-export function accountParam(ctx: ServerKitContext): string {
-    const account = (ctx.params.account ?? '').trim();
-    if (account.length < 3) throw new HttpError(400).withDetails({ reason: 'account_required' });
-    return account;
+/** Canonical UUID form (any version), used to validate the `:accountId` path param. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The account id (UUID) from the route path; throws HTTP 400 (`reason: 'account_required'`) if missing or not a UUID. */
+export function accountIdParam(ctx: ServerKitContext): string {
+    const accountId = (ctx.params.accountId ?? '').trim();
+    if (!UUID_RE.test(accountId)) throw new HttpError(400).withDetails({ reason: 'account_required' });
+    return accountId;
 }
 
 /** Rethrow iCloud client failures as HTTP errors; pass everything else through. */

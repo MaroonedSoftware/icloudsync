@@ -30,7 +30,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
     if (db) {
-        await db.deleteFrom('appSettings').execute();
+        // Scope the wipe to the user-facing settings keys so a concurrent test file's
+        // encryption salt (also in app_settings) survives.
+        await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
         await db.destroy();
     }
 });
@@ -41,15 +43,19 @@ describe('SettingsService (integration)', () => {
             console.warn('[settings.service.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('appSettings').execute();
+        // Scope the wipe to the user-facing settings keys so a concurrent test file's
+        // encryption salt (also in app_settings) survives.
+        await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
 
         // Defaults when empty.
         expect(await settings.photosLayout()).toBe('flat');
+        expect(await settings.photosNaming()).toBe('clean');
         expect(await settings.syncCron()).toBe('0 */6 * * *');
         expect(await settings.notifications()).toEqual({ channel: 'none', throttleHours: 24 });
 
         // Persist.
         await settings.setPhotosLayout('album');
+        await settings.setPhotosNaming('datetime');
         await settings.setSyncCron('0 3 * * *');
         await settings.setNotifications({ channel: 'webhook', webhookUrl: 'https://hook.example/x' });
 
@@ -57,6 +63,7 @@ describe('SettingsService (integration)', () => {
         const fresh = new SettingsService(db);
         expect(await fresh.all()).toEqual({
             photosLayout: 'album',
+            photosNaming: 'datetime',
             syncCron: '0 3 * * *',
             notifications: { channel: 'webhook', throttleHours: 24, webhookUrl: 'https://hook.example/x' },
         });
@@ -71,7 +78,9 @@ describe('SettingsService (integration)', () => {
             console.warn('[settings.service.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('appSettings').execute();
+        // Scope the wipe to the user-facing settings keys so a concurrent test file's
+        // encryption salt (also in app_settings) survives.
+        await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
 
         expect(await settings.reauthNotifiedAt('me@icloud.com')).toBeUndefined();
         await settings.setReauthNotifiedAt('me@icloud.com', '2026-07-01T00:00:00.000Z');
@@ -91,11 +100,28 @@ describe('SettingsService (integration)', () => {
             console.warn('[settings.service.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('appSettings').execute();
+        // Scope the wipe to the user-facing settings keys so a concurrent test file's
+        // encryption salt (also in app_settings) survives.
+        await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
         await db
             .insertInto('appSettings')
             .values({ key: 'photos_layout', value: sql`'"bogus"'::jsonb` })
             .execute();
         expect(await settings.photosLayout()).toBe('flat');
+    });
+
+    it('ignores an invalid stored naming scheme and falls back to clean', async () => {
+        if (!available || !db) {
+            console.warn('[settings.service.int] skipped — Postgres unreachable');
+            return;
+        }
+        // Scope the wipe to the user-facing settings keys so a concurrent test file's
+        // encryption salt (also in app_settings) survives.
+        await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
+        await db
+            .insertInto('appSettings')
+            .values({ key: 'photos_naming', value: sql`'"bogus"'::jsonb` })
+            .execute();
+        expect(await settings.photosNaming()).toBe('clean');
     });
 });

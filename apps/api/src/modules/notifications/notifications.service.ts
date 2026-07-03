@@ -54,18 +54,20 @@ export class NotificationsService {
     }
 
     /**
-     * Notify the admin that `account` needs to re-authenticate, unless an alert
-     * was already sent within the configured throttle window. A delivery failure
-     * is logged and leaves the throttle timestamp untouched, so the next sync run
-     * retries.
+     * Notify the admin that the account `accountId` (Apple ID `appleId`) needs to
+     * re-authenticate, unless an alert was already sent within the configured
+     * throttle window. The throttle is keyed by the stable account id; the Apple
+     * ID is shown in the message so the alert is human-readable. A delivery
+     * failure is logged and leaves the throttle timestamp untouched, so the next
+     * sync run retries.
      */
-    async notifyReauthRequired(account: string): Promise<void> {
+    async notifyReauthRequired(accountId: string, appleId: string): Promise<void> {
         const config = await this.settings.notifications();
         if (config.channel === 'none') return;
 
-        const lastIso = await this.settings.reauthNotifiedAt(account);
+        const lastIso = await this.settings.reauthNotifiedAt(accountId);
         if (lastIso && this.withinThrottle(lastIso, config.throttleHours)) {
-            this.logger.debug(`[notifications] reauth alert for ${account} throttled (last sent ${lastIso})`);
+            this.logger.debug(`[notifications] reauth alert for ${appleId} throttled (last sent ${lastIso})`);
             return;
         }
 
@@ -73,18 +75,18 @@ export class NotificationsService {
             const sent = await this.notify({
                 kind: 'reauth_required',
                 title: `iCloud account needs re-authentication`,
-                message: `The account ${account} could not be restored for backup — its session or trust token has expired. Sign in again to resume syncing.`,
-                account,
+                message: `The account ${appleId} could not be restored for backup — its session or trust token has expired. Sign in again to resume syncing.`,
+                account: appleId,
             });
-            if (sent) await this.settings.setReauthNotifiedAt(account, this.now().toISOString());
+            if (sent) await this.settings.setReauthNotifiedAt(accountId, this.now().toISOString());
         } catch (error) {
-            this.logger.error(`[notifications] failed to send reauth alert for ${account}`, error);
+            this.logger.error(`[notifications] failed to send reauth alert for ${appleId}`, error);
         }
     }
 
     /** Forget an account's throttle timestamp (call once it is authenticated again). */
-    async clearReauth(account: string): Promise<void> {
-        await this.settings.clearReauthNotified(account);
+    async clearReauth(accountId: string): Promise<void> {
+        await this.settings.clearReauthNotified(accountId);
     }
 
     /**

@@ -1,15 +1,8 @@
 import type { Readable } from 'node:stream';
 import { StorageObjectNotFoundError, StorageProvider } from '@maroonedsoftware/storage';
 
-/** Default key prefix for archived photos (empty: keys are `<account>/<record>/<file>`). */
+/** Default key prefix for archived photos (empty: keys are `<accountPrefix>/<group?>/<file>`). */
 export const DEFAULT_PHOTO_PREFIX = '';
-
-/** Make a filename safe to use as a path segment (no separators, no leading dots). */
-function safeName(filename: string | undefined): string | undefined {
-    if (!filename) return undefined;
-    const cleaned = filename.replace(/[/\\\x00]/g, '_').replace(/^\.+/, '').trim();
-    return cleaned.length > 0 ? cleaned : undefined;
-}
 
 /**
  * Durable store for the actual photo *bytes* (the backup), as opposed to the
@@ -28,18 +21,45 @@ export class PhotoArchive {
     ) {}
 
     /**
-     * The storage key an asset is archived under:
-     * `<account>/<group?>/<recordName>/<filename>`, keeping the original name +
-     * extension on disk while the unique `recordName` folder prevents collisions
-     * between same-named photos. `group` is the (already path-safe) organization
-     * folder from the chosen layout — e.g. `2024/2024-03` or an album name —
-     * omitted for the flat layout. Falls back to `<recordName>` with no filename.
+     * The storage key an asset is archived under: `<accountPrefix>/<group?>/<leaf>`,
+     * where `accountPrefix` is the account's archive prefix (its custom
+     * `archive_prefix`, else its id), `leaf` is the already-composed, path-safe
+     * filename from the chosen naming scheme (see {@link namingLeaf}) and `group`
+     * is the (already path-safe) organization folder from the chosen layout — e.g.
+     * `2024/2024-03` or an album name — omitted for the flat layout. All parts are
+     * sanitized by their producers, so this only joins them under the base prefix.
      */
-    key(accountName: string, recordName: string, filename?: string, group?: string): string {
-        const name = safeName(filename);
-        const leaf = name ? `${recordName}/${name}` : recordName;
+    key(accountPrefix: string, leaf: string, group?: string): string {
         const mid = group ? `${group}/` : '';
-        return `${this.prefix}${accountName}/${mid}${leaf}`;
+        return `${this.prefix}${accountPrefix}/${mid}${leaf}`;
+    }
+
+    /**
+     * Re-root a stored `key` from one account prefix folder to another (under the
+     * same base prefix), preserving the group/leaf tail. Returns `null` when the
+     * key does not live under `fromAccountPrefix` (so it should be left alone).
+     * Used when an account's `archive_prefix` changes and its existing files are
+     * relocated (see {@link move}).
+     */
+    reprefix(key: string, fromAccountPrefix: string, toAccountPrefix: string): string | null {
+        const from = `${this.prefix}${fromAccountPrefix}/`;
+        if (!key.startsWith(from)) return null;
+        return `${this.prefix}${toAccountPrefix}/${key.slice(from.length)}`;
+    }
+
+    /**
+     * Move an archived object from `fromKey` to `toKey`. Idempotent for a resumed
+     * relocation: a missing source is treated as already moved (a prior partial
+     * run relocated it), so re-running to finish an interrupted relocation is safe.
+     */
+    async move(fromKey: string, toKey: string): Promise<void> {
+        if (fromKey === toKey) return;
+        try {
+            await this.storage.move(fromKey, toKey);
+        } catch (error) {
+            if (!(error instanceof StorageObjectNotFoundError)) throw error;
+            // Source already gone — assume a prior partial relocation moved it.
+        }
     }
 
     /** Write the asset bytes, returning the byte count stored. */

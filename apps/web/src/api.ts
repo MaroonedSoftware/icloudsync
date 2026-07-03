@@ -3,6 +3,9 @@
 // are relative and replay the browser session automatically.
 
 export interface AccountStatus {
+    /** The account's UUID (its internal identity, used in every account-scoped call). */
+    id: string;
+    /** The Apple ID email (for display). */
     account: string;
     authenticated: boolean;
 }
@@ -10,6 +13,12 @@ export interface AccountStatus {
 export type LoginState = 'authenticated' | 'mfaRequired' | 'loggedOut';
 export interface LoginResult {
     state: LoginState;
+}
+
+/** Result of creating/beginning login for an account: its id plus the login state. */
+export interface CreateAccountResult extends LoginResult {
+    /** The (possibly newly created) account's UUID. */
+    id: string;
 }
 
 export interface TwoFactorPhone {
@@ -52,6 +61,8 @@ export interface PhotosPage {
 
 export type PhotoLayout = 'flat' | 'date' | 'album';
 
+export type PhotoNaming = 'clean' | 'datetime' | 'hash';
+
 export type NotificationChannel = 'none' | 'webhook' | 'email';
 
 export interface EmailSettings {
@@ -77,12 +88,30 @@ export interface NotificationSettings {
 
 export interface AppSettings {
     photosLayout: PhotoLayout;
+    photosNaming: PhotoNaming;
     syncCron: string;
     notifications: NotificationSettings;
 }
 
+/**
+ * An account's on-disk organization: its layout/naming overrides (`null` = inherit
+ * the global default) plus the `defaults` those null fields fall back to.
+ */
+export interface AccountSettings {
+    photosLayout: PhotoLayout | null;
+    photosNaming: PhotoNaming | null;
+    /** Custom photo-archive path prefix, or `null` to use the default (the account id). */
+    archivePrefix: string | null;
+    /** True while a prefix change's file move is still queued or running. */
+    relocating: boolean;
+    /** The last move's failure summary, or `null` if it succeeded / none ran. */
+    relocationError: string | null;
+    defaults: { photosLayout: PhotoLayout; photosNaming: PhotoNaming };
+}
+
 export interface Stats {
-    account: string;
+    /** The account's UUID. */
+    id: string;
     /** The sync cron expression. */
     schedule: string;
     /** Whether a sync is currently running for this account. */
@@ -100,6 +129,9 @@ export interface Stats {
 
 /** One account's row in the admin overview: live auth state + synced-library stats. */
 export interface AccountOverview {
+    /** The account's UUID. */
+    id: string;
+    /** The Apple ID email (for display). */
     account: string;
     authenticated: boolean;
     total: number;
@@ -157,8 +189,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return (await res.json()) as T;
 }
 
-/** Base path for an account's routes; the Apple ID is URL-encoded (it contains `@`). */
-const accountPath = (account: string): string => `/icloud/accounts/${encodeURIComponent(account)}`;
+/** Base path for an account's routes, keyed by its UUID id. */
+const accountPath = (id: string): string => `/icloud/accounts/${encodeURIComponent(id)}`;
 
 export const api = {
     /** The registered accounts and whether each has a usable session loaded. */
@@ -167,36 +199,45 @@ export const api = {
     overview: () => request<Overview>('/icloud/overview'),
     /** Enqueue a sync of every registered account. */
     syncAll: () => request<{ queued: boolean; job: string }>('/icloud/sync', { method: 'POST', body: '{}' }),
-    login: (account: string, password: string) =>
-        request<LoginResult>(`${accountPath(account)}/login`, { method: 'POST', body: JSON.stringify({ password }) }),
-    submitDeviceCode: (account: string, code: string) =>
-        request<LoginResult>(`${accountPath(account)}/2fa`, { method: 'POST', body: JSON.stringify({ code }) }),
+    /** Register (or reuse) an account by Apple ID and begin login; returns its id + login state. */
+    createAccount: (accountName: string, password: string) =>
+        request<CreateAccountResult>('/icloud/accounts', { method: 'POST', body: JSON.stringify({ accountName, password }) }),
+    submitDeviceCode: (id: string, code: string) =>
+        request<LoginResult>(`${accountPath(id)}/2fa`, { method: 'POST', body: JSON.stringify({ code }) }),
     /** Ask Apple to push a security code to the account's trusted devices. */
-    requestDeviceCode: (account: string) => request<{ requested: boolean }>(`${accountPath(account)}/2fa/device`, { method: 'POST', body: '{}' }),
-    twoFactorOptions: (account: string) => request<TwoFactorOptions>(`${accountPath(account)}/2fa/options`),
-    requestPhoneCode: (account: string, phoneId: number) =>
-        request<{ requested: boolean }>(`${accountPath(account)}/2fa/phone`, { method: 'POST', body: JSON.stringify({ phoneId }) }),
-    verifyPhoneCode: (account: string, phoneId: number, code: string) =>
-        request<LoginResult>(`${accountPath(account)}/2fa/phone/verify`, { method: 'POST', body: JSON.stringify({ phoneId, code }) }),
-    logout: (account: string) => request<LoginResult>(`${accountPath(account)}/logout`, { method: 'POST' }),
+    requestDeviceCode: (id: string) => request<{ requested: boolean }>(`${accountPath(id)}/2fa/device`, { method: 'POST', body: '{}' }),
+    twoFactorOptions: (id: string) => request<TwoFactorOptions>(`${accountPath(id)}/2fa/options`),
+    requestPhoneCode: (id: string, phoneId: number) =>
+        request<{ requested: boolean }>(`${accountPath(id)}/2fa/phone`, { method: 'POST', body: JSON.stringify({ phoneId }) }),
+    verifyPhoneCode: (id: string, phoneId: number, code: string) =>
+        request<LoginResult>(`${accountPath(id)}/2fa/phone/verify`, { method: 'POST', body: JSON.stringify({ phoneId, code }) }),
+    logout: (id: string) => request<LoginResult>(`${accountPath(id)}/logout`, { method: 'POST' }),
     /** Forget the session and unregister the account entirely. */
-    removeAccount: (account: string) => request<{ state: string }>(accountPath(account), { method: 'DELETE' }),
-    triggerSync: (account: string) => request<{ queued: boolean; job: string }>(`${accountPath(account)}/sync`, { method: 'POST', body: '{}' }),
+    removeAccount: (id: string) => request<{ state: string }>(accountPath(id), { method: 'DELETE' }),
+    triggerSync: (id: string) => request<{ queued: boolean; job: string }>(`${accountPath(id)}/sync`, { method: 'POST', body: '{}' }),
     /** Request cancellation of an account's running sync. `cancelled` is whether a run was actively aborted. */
-    cancelSync: (account: string) => request<{ cancelled: boolean }>(`${accountPath(account)}/sync/cancel`, { method: 'POST' }),
-    stats: (account: string) => request<Stats>(`${accountPath(account)}/stats`),
+    cancelSync: (id: string) => request<{ cancelled: boolean }>(`${accountPath(id)}/sync/cancel`, { method: 'POST' }),
+    stats: (id: string) => request<Stats>(`${accountPath(id)}/stats`),
     settings: () => request<AppSettings>('/icloud/settings'),
-    updateSettings: (patch: Partial<Pick<AppSettings, 'photosLayout' | 'syncCron' | 'notifications'>>) =>
+    updateSettings: (patch: Partial<Pick<AppSettings, 'photosLayout' | 'photosNaming' | 'syncCron' | 'notifications'>>) =>
         request<AppSettings>('/icloud/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+    accountSettings: (id: string) => request<AccountSettings>(`${accountPath(id)}/settings`),
+    /** Patch an account's layout/naming/prefix overrides; `null` (or `''` for the prefix) clears an override back to the default. */
+    updateAccountSettings: (
+        id: string,
+        patch: { photosLayout?: PhotoLayout | null; photosNaming?: PhotoNaming | null; archivePrefix?: string | null },
+    ) => request<AccountSettings>(`${accountPath(id)}/settings`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    /** Resume a relocation that failed part-way (re-runs the recorded move). Returns the updated settings. */
+    retryRelocation: (id: string) => request<AccountSettings>(`${accountPath(id)}/relocate/retry`, { method: 'POST', body: '{}' }),
     /** Send a test notification over the configured channel; rejects (422) with the error if it fails. */
     testNotification: () => request<{ sent: boolean }>('/icloud/notifications/test', { method: 'POST', body: '{}' }),
-    listPhotos: (account: string, params: ListPhotosParams = {}) => {
+    listPhotos: (id: string, params: ListPhotosParams = {}) => {
         const q = new URLSearchParams();
         if (params.limit != null) q.set('limit', String(params.limit));
         if (params.offset != null) q.set('offset', String(params.offset));
         if (params.favorite != null) q.set('favorite', String(params.favorite));
         if (params.order) q.set('order', params.order);
-        return request<PhotosPage>(`${accountPath(account)}/photos?${q.toString()}`);
+        return request<PhotosPage>(`${accountPath(id)}/photos?${q.toString()}`);
     },
 };
 
@@ -211,6 +252,6 @@ export function thumbnailResolution(photo: Photo): string | undefined {
 }
 
 /** Same-origin download URL for an account's rendition, served by the API's download proxy. */
-export function downloadUrl(account: string, recordName: string, resolution: string): string {
-    return `${accountPath(account)}/photos/${encodeURIComponent(recordName)}/download?resolution=${encodeURIComponent(resolution)}`;
+export function downloadUrl(id: string, recordName: string, resolution: string): string {
+    return `${accountPath(id)}/photos/${encodeURIComponent(recordName)}/download?resolution=${encodeURIComponent(resolution)}`;
 }

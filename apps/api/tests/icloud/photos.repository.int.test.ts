@@ -15,6 +15,7 @@ const ACCOUNT = 'integration-test@icloud.com';
 
 let db: Kysely<DB> | undefined;
 let repo: PhotosRepository;
+let accountId: string;
 let available = false;
 
 function asset(id: string, favorite: boolean, filename: string): PhotoAsset {
@@ -37,6 +38,10 @@ beforeAll(async () => {
         db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }), plugins: KyselyDefaultPlugins });
         await sql`select 1`.execute(db);
         repo = new PhotosRepository(db);
+        // The photos FK requires a real account row; create one and key on its id.
+        await db.deleteFrom('icloudAccounts').where('accountName', '=', ACCOUNT).execute();
+        const row = await db.insertInto('icloudAccounts').values({ accountName: ACCOUNT }).returning('id').executeTakeFirstOrThrow();
+        accountId = row.id;
         available = true;
     } catch {
         available = false;
@@ -47,7 +52,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
     if (db) {
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
+        // Deleting the account cascades to its photos.
+        await db.deleteFrom('icloudAccounts').where('accountName', '=', ACCOUNT).execute();
         await db.destroy();
     }
 });
@@ -58,12 +64,12 @@ describe('PhotosRepository (integration)', () => {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
 
-        const written = await repo.upsertBatch(ACCOUNT, [asset('a1', true, 'first.jpg'), asset('a2', false, 'second.heic')]);
+        const written = await repo.upsertBatch(accountId, [asset('a1', true, 'first.jpg'), asset('a2', false, 'second.heic')]);
         expect(written).toBe(2);
 
-        const rows = await db.selectFrom('icloudPhotos').selectAll().where('accountName', '=', ACCOUNT).orderBy('recordName').execute();
+        const rows = await db.selectFrom('icloudPhotos').selectAll().where('accountId', '=', accountId).orderBy('recordName').execute();
         expect(rows).toHaveLength(2);
         expect(rows[0]!.filename).toBe('first.jpg');
         expect(rows[0]!.isFavorite).toBe(true);
@@ -71,11 +77,11 @@ describe('PhotosRepository (integration)', () => {
         expect(rows[0]!.resources).toMatchObject({ resOriginalRes: { downloadURL: 'https://p-content.icloud.com/a1' } });
 
         // Re-upsert the same record with changed metadata -> update, not duplicate.
-        await repo.upsertBatch(ACCOUNT, [asset('a1', false, 'renamed.jpg')]);
+        await repo.upsertBatch(accountId, [asset('a1', false, 'renamed.jpg')]);
         const updated = await db
             .selectFrom('icloudPhotos')
             .selectAll()
-            .where('accountName', '=', ACCOUNT)
+            .where('accountId', '=', accountId)
             .where('recordName', '=', 'a1')
             .executeTakeFirstOrThrow();
         expect(updated.filename).toBe('renamed.jpg');
@@ -84,7 +90,7 @@ describe('PhotosRepository (integration)', () => {
         const count = await db
             .selectFrom('icloudPhotos')
             .select(db.fn.countAll().as('n'))
-            .where('accountName', '=', ACCOUNT)
+            .where('accountId', '=', accountId)
             .executeTakeFirstOrThrow();
         expect(Number(count.n)).toBe(2);
     });
@@ -94,10 +100,10 @@ describe('PhotosRepository (integration)', () => {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
-        await repo.upsertBatch(ACCOUNT, [asset('a1', true, 'first.jpg'), asset('a2', false, 'second.heic')]);
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
+        await repo.upsertBatch(accountId, [asset('a1', true, 'first.jpg'), asset('a2', false, 'second.heic')]);
 
-        const page = await repo.list(ACCOUNT, { limit: 10, offset: 0, order: 'asc' });
+        const page = await repo.list(accountId, { limit: 10, offset: 0, order: 'asc' });
         expect(page.total).toBe(2);
         expect(page.photos.map(p => p.recordName)).toEqual(['a1', 'a2']);
         // int8 -> number (epoch ms), DateTime -> ISO string, jsonb -> object.
@@ -105,13 +111,13 @@ describe('PhotosRepository (integration)', () => {
         expect(typeof page.photos[0]!.syncedAt).toBe('string');
         expect(page.photos[0]!.resources.resOriginalRes!.downloadURL).toBe('https://p-content.icloud.com/a1');
 
-        const favorites = await repo.list(ACCOUNT, { limit: 10, offset: 0, favorite: true });
+        const favorites = await repo.list(accountId, { limit: 10, offset: 0, favorite: true });
         expect(favorites.total).toBe(1);
         expect(favorites.photos[0]!.recordName).toBe('a1');
 
-        const one = await repo.get(ACCOUNT, 'a2');
+        const one = await repo.get(accountId, 'a2');
         expect(one?.filename).toBe('second.heic');
-        expect(await repo.get(ACCOUNT, 'missing')).toBeNull();
+        expect(await repo.get(accountId, 'missing')).toBeNull();
     });
 
     it('excludes hidden and deleted by default, includes them on request', async () => {
@@ -119,15 +125,15 @@ describe('PhotosRepository (integration)', () => {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
         const hidden = { ...asset('h1', false, 'hidden.jpg'), isHidden: true };
         const deleted = { ...asset('d1', false, 'deleted.jpg'), isDeleted: true };
-        await repo.upsertBatch(ACCOUNT, [asset('v1', false, 'visible.jpg'), hidden, deleted]);
+        await repo.upsertBatch(accountId, [asset('v1', false, 'visible.jpg'), hidden, deleted]);
 
-        const visible = await repo.list(ACCOUNT, { limit: 10, offset: 0 });
+        const visible = await repo.list(accountId, { limit: 10, offset: 0 });
         expect(visible.photos.map(p => p.recordName)).toEqual(['v1']);
 
-        const withHidden = await repo.list(ACCOUNT, { limit: 10, offset: 0, includeHidden: true, includeDeleted: true });
+        const withHidden = await repo.list(accountId, { limit: 10, offset: 0, includeHidden: true, includeDeleted: true });
         expect(withHidden.total).toBe(3);
     });
 
@@ -136,9 +142,9 @@ describe('PhotosRepository (integration)', () => {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
 
-        const empty = await repo.stats(ACCOUNT);
+        const empty = await repo.stats(accountId);
         expect(empty).toEqual({
             total: 0,
             favorites: 0,
@@ -151,9 +157,9 @@ describe('PhotosRepository (integration)', () => {
 
         const older = { ...asset('s1', true, 'old.jpg'), assetDate: 1_500_000_000 };
         const newer = { ...asset('s2', false, 'new.jpg'), assetDate: 1_700_000_000 };
-        await repo.upsertBatch(ACCOUNT, [older, newer]);
+        await repo.upsertBatch(accountId, [older, newer]);
 
-        const stats = await repo.stats(ACCOUNT);
+        const stats = await repo.stats(accountId);
         expect(stats.total).toBe(2);
         expect(stats.favorites).toBe(1);
         expect(stats.backedUp).toBe(0);
@@ -167,21 +173,21 @@ describe('PhotosRepository (integration)', () => {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');
             return;
         }
-        await db.deleteFrom('icloudPhotos').where('accountName', '=', ACCOUNT).execute();
-        await repo.upsertBatch(ACCOUNT, [asset('b1', false, 'one.jpg'), asset('b2', false, 'two.jpg')]);
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
+        await repo.upsertBatch(accountId, [asset('b1', false, 'one.jpg'), asset('b2', false, 'two.jpg')]);
 
-        expect(await repo.backedUpChecksums(ACCOUNT)).toEqual(new Map());
+        expect(await repo.backedUp(accountId)).toEqual(new Map());
 
-        await repo.markBackedUp(ACCOUNT, 'b1', { key: 'photos/x/b1', size: 1500, checksum: 'sum-b1' });
+        await repo.markBackedUp(accountId, 'b1', { key: 'photos/x/b1', size: 1500, checksum: 'sum-b1' });
 
-        const checksums = await repo.backedUpChecksums(ACCOUNT);
-        expect(checksums).toEqual(new Map([['b1', 'sum-b1']]));
+        const backedUp = await repo.backedUp(accountId);
+        expect(backedUp).toEqual(new Map([['b1', { checksum: 'sum-b1', key: 'photos/x/b1' }]]));
 
-        const stats = await repo.stats(ACCOUNT);
+        const stats = await repo.stats(accountId);
         expect(stats.backedUp).toBe(1);
         expect(stats.backedUpBytes).toBe(1500);
 
-        const one = await repo.get(ACCOUNT, 'b1');
+        const one = await repo.get(accountId, 'b1');
         expect(one?.backupKey).toBe('photos/x/b1');
         expect(one?.backupSize).toBe(1500);
         expect(typeof one?.backedUpAt).toBe('string');

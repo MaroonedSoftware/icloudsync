@@ -23,7 +23,7 @@ export function icloudAdminRouter() {
         const settings = ctx.container.get(SettingsService);
 
         const [statuses, schedule] = await Promise.all([icloud.accountsStatus(), settings.syncCron()]);
-        const accounts = await Promise.all(statuses.map(async status => ({ ...status, ...(await repo.stats(status.account)) })));
+        const accounts = await Promise.all(statuses.map(async status => ({ ...status, ...(await repo.stats(status.id)) })));
         ctx.body = { schedule, accounts };
     });
 

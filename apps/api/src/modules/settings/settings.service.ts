@@ -1,6 +1,7 @@
 import { Kysely, sql } from 'kysely';
 import { DEFAULT_SYNC_CRON } from '../icloud/sync/sync.defaults.js';
 import { PHOTO_LAYOUTS, type PhotoLayout } from '../icloud/storage/photo.layout.js';
+import { PHOTO_NAMINGS, type PhotoNaming } from '../icloud/storage/photo.naming.js';
 import {
     DEFAULT_NOTIFICATION_SETTINGS,
     notificationSettingsSchema,
@@ -12,6 +13,7 @@ import type { DB, Json } from '../data/kysely.js';
 /** Setting keys persisted in `app_settings`. */
 const KEY = {
     photosLayout: 'photos_layout',
+    photosNaming: 'photos_naming',
     syncCron: 'sync_cron',
     notifications: 'notifications',
     /** Runtime throttle state: `{ [account]: lastNotifiedIso }`. Not part of {@link AppSettingsValues}. */
@@ -20,8 +22,10 @@ const KEY = {
 
 /** The user-facing settings, with defaults applied. */
 export interface AppSettingsValues {
-    /** On-disk photo organization. */
+    /** On-disk photo organization (which folders assets are filed under). */
     photosLayout: PhotoLayout;
+    /** How archived photo filenames are composed within their layout folder. */
+    photosNaming: PhotoNaming;
     /** Sync schedule (cron). */
     syncCron: string;
     /** Admin notification config (channel, throttle, webhook/SMTP details). */
@@ -60,6 +64,15 @@ export class SettingsService {
     }
     setPhotosLayout(layout: PhotoLayout): Promise<void> {
         return this.write(KEY.photosLayout, layout);
+    }
+
+    /** The archived-filename scheme (default `clean`). */
+    async photosNaming(): Promise<PhotoNaming> {
+        const value = await this.read<string>(KEY.photosNaming);
+        return value && (PHOTO_NAMINGS as readonly string[]).includes(value) ? (value as PhotoNaming) : 'clean';
+    }
+    setPhotosNaming(naming: PhotoNaming): Promise<void> {
+        return this.write(KEY.photosNaming, naming);
     }
 
     /** The sync schedule cron (default every 6 hours). */
@@ -114,7 +127,12 @@ export class SettingsService {
 
     /** All user-facing settings at once, with defaults applied. */
     async all(): Promise<AppSettingsValues> {
-        const [photosLayout, syncCron, notifications] = await Promise.all([this.photosLayout(), this.syncCron(), this.notifications()]);
-        return { photosLayout, syncCron, notifications };
+        const [photosLayout, photosNaming, syncCron, notifications] = await Promise.all([
+            this.photosLayout(),
+            this.photosNaming(),
+            this.syncCron(),
+            this.notifications(),
+        ]);
+        return { photosLayout, photosNaming, syncCron, notifications };
     }
 }

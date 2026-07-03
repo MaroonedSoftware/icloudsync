@@ -27,3 +27,20 @@ export class InvalidSecurityCodeError extends ICloudError {}
  * requested service is reachable.
  */
 export class PcsRequiredError extends ICloudError {}
+
+/**
+ * iCloud returned HTTP 429 (Too Many Requests) and the request kept being
+ * throttled after the client exhausted its automatic retries. Callers can use
+ * {@link retryAfterMs} to back off before trying the operation again.
+ */
+export class RateLimitError extends ICloudError {
+    constructor(
+        message: string,
+        status?: number,
+        body?: string,
+        /** How long the server asked us to wait (from `Retry-After`), in ms, when known. */
+        readonly retryAfterMs?: number,
+    ) {
+        super(message, status, body);
+    }
+}

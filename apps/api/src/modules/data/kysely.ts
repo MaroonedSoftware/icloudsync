@@ -31,10 +31,18 @@ export interface AppSettings {
 export interface IcloudAccounts {
   accountName: string;
   addedAt: Generated<DateTime>;
+  archivePrefix: string | null;
+  id: Generated<string>;
+  photosLayout: string | null;
+  photosNaming: string | null;
+  relocationError: string | null;
+  relocationFrom: string | null;
+  session: Buffer | null;
+  sessionUpdatedAt: DateTime | null;
 }
 
 export interface IcloudPhotos {
-  accountName: string;
+  accountId: string;
   addedDate: bigint | null;
   assetDate: bigint | null;
   backedUpAt: DateTime | null;
@@ -55,17 +63,9 @@ export interface SchemaMigrations {
   version: string;
 }
 
-export interface StorageObjects {
-  content: Buffer;
-  contentType: string | null;
-  key: string;
-  updatedAt: Generated<DateTime>;
-}
-
 export interface DB {
   appSettings: AppSettings;
   icloudAccounts: IcloudAccounts;
   icloudPhotos: IcloudPhotos;
   schemaMigrations: SchemaMigrations;
-  storageObjects: StorageObjects;
 }

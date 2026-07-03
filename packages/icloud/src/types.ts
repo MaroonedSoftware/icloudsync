@@ -1,3 +1,4 @@
+import type { RetryOptions } from './http/client.js';
 import type { StoredCookie } from './http/cookies.js';
 import type { SessionStore } from './session/session.store.js';
 
@@ -50,6 +51,8 @@ export interface ClientConfig {
     clientId?: string;
     /** Override the `fetch` implementation (proxies, tests). */
     fetch?: (input: string, init?: RequestInit) => Promise<Response>;
+    /** Tune automatic retry/backoff for HTTP 429 (Too Many Requests) responses. */
+    retry?: RetryOptions;
     /** Log auth-flow diagnostics to stderr. */
     debug?: boolean;
 }

@@ -51,15 +51,16 @@ export function Accounts({
         }
     };
 
-    const syncAll = () => act('all', () => api.syncAll());
-    const syncOne = (a: string) => act(`sync:${a}`, () => api.triggerSync(a));
-    const signOut = (a: string) => act(`out:${a}`, () => api.logout(a));
-    const remove = (a: string) => {
-        if (!window.confirm(`Remove ${a}? This forgets its session and stops backing it up. Photos already archived are kept.`)) return;
-        void act(`rm:${a}`, () => api.removeAccount(a));
-    };
-
     const accounts = overview?.accounts ?? [];
+
+    const syncAll = () => act('all', () => api.syncAll());
+    const syncOne = (id: string) => act(`sync:${id}`, () => api.triggerSync(id));
+    const signOut = (id: string) => act(`out:${id}`, () => api.logout(id));
+    const remove = (id: string) => {
+        const email = accounts.find(a => a.id === id)?.account ?? 'this account';
+        if (!window.confirm(`Remove ${email}? This forgets its session and stops backing it up. Photos already archived are kept.`)) return;
+        void act(`rm:${id}`, () => api.removeAccount(id));
+    };
 
     return (
         <>
@@ -85,7 +86,7 @@ export function Accounts({
             ) : accounts.length === 0 ? (
                 <div className="empty">No accounts yet. Add one to start backing it up.</div>
             ) : (
-                accounts.map(a => <Row key={a.account} account={a} busy={busy} onOpen={onOpen} onSync={syncOne} onSignOut={signOut} onRemove={remove} />)
+                accounts.map(a => <Row key={a.id} account={a} busy={busy} onOpen={onOpen} onSync={syncOne} onSignOut={signOut} onRemove={remove} />)
             )}
         </>
     );
@@ -106,13 +107,14 @@ function Row({
     onSignOut: (a: string) => void;
     onRemove: (a: string) => void;
 }) {
-    const a = account.account;
+    const id = account.id;
+    const email = account.account;
     const anyBusy = busy != null;
     return (
         <div className="card account-row">
             <div className="account-row-head">
-                <button className="link" type="button" onClick={() => onOpen(a)} title="View this account">
-                    {a}
+                <button className="link" type="button" onClick={() => onOpen(id)} title="View this account">
+                    {email}
                 </button>
                 <span className={`badge ${account.authenticated ? 'ok' : ''}`}>
                     <span className="dot" />
@@ -129,20 +131,20 @@ function Row({
             </div>
 
             <div className="account-row-actions">
-                <button type="button" onClick={() => onOpen(a)} disabled={anyBusy}>
+                <button type="button" onClick={() => onOpen(id)} disabled={anyBusy}>
                     Open
                 </button>
-                <button type="button" onClick={() => onSync(a)} disabled={anyBusy}>
-                    {busy === `sync:${a}` ? 'Starting…' : 'Sync now'}
+                <button type="button" onClick={() => onSync(id)} disabled={anyBusy}>
+                    {busy === `sync:${id}` ? 'Starting…' : 'Sync now'}
                 </button>
                 {account.authenticated && (
-                    <button type="button" onClick={() => onSignOut(a)} disabled={anyBusy}>
-                        {busy === `out:${a}` ? 'Signing out…' : 'Sign out'}
+                    <button type="button" onClick={() => onSignOut(id)} disabled={anyBusy}>
+                        {busy === `out:${id}` ? 'Signing out…' : 'Sign out'}
                     </button>
                 )}
                 <span className="spacer" />
-                <button className="danger" type="button" onClick={() => onRemove(a)} disabled={anyBusy}>
-                    {busy === `rm:${a}` ? 'Removing…' : 'Remove'}
+                <button className="danger" type="button" onClick={() => onRemove(id)} disabled={anyBusy}>
+                    {busy === `rm:${id}` ? 'Removing…' : 'Remove'}
                 </button>
             </div>
         </div>

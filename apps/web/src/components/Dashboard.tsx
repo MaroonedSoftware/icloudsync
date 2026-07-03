@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, downloadUrl, thumbnailResolution, type Photo, type Stats } from '../api.js';
 import { bytes, count, relativeTime, scheduleLabel } from '../format.js';
+import { AccountStorage } from './AccountStorage.js';
 import { Settings } from './Settings.js';
 
 const RECENT_COUNT = 12;
@@ -8,7 +9,7 @@ const POLL_MS = 4000;
 const MAX_POLL_MS = 150_000;
 
 /** Single account's view: backup stats, recent photos, live sync progress, settings, and account actions. */
-export function Dashboard({ account, onChanged }: { account: string; onChanged: () => void }) {
+export function Dashboard({ id, account, onChanged }: { id: string; account: string; onChanged: () => void }) {
     const [stats, setStats] = useState<Stats>();
     const [recent, setRecent] = useState<Photo[]>();
     const [error, setError] = useState<string>();
@@ -19,7 +20,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
 
     const refresh = useCallback(async (): Promise<Stats | undefined> => {
         try {
-            const [s, page] = await Promise.all([api.stats(account), api.listPhotos(account, { limit: RECENT_COUNT, order: 'desc' })]);
+            const [s, page] = await Promise.all([api.stats(id), api.listPhotos(id, { limit: RECENT_COUNT, order: 'desc' })]);
             setStats(s);
             setRecent(page.photos);
             setError(undefined);
@@ -30,7 +31,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
             setError(String(err));
             return undefined;
         }
-    }, [account]);
+    }, [id]);
 
     // Reset per-account view state when switching accounts so stale photos don't flash.
     useEffect(() => {
@@ -38,7 +39,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
         setRecent(undefined);
         setSyncing(false);
         setCancelling(false);
-    }, [account]);
+    }, [id]);
 
     useEffect(() => {
         void refresh();
@@ -75,7 +76,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
         setBusy(true);
         setError(undefined);
         try {
-            await api.triggerSync(account);
+            await api.triggerSync(id);
             pollUntil.current = Date.now() + MAX_POLL_MS;
             setSyncing(true);
             await refresh();
@@ -90,7 +91,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
         setCancelling(true);
         setError(undefined);
         try {
-            await api.cancelSync(account);
+            await api.cancelSync(id);
             await refresh(); // reflect the wind-down; polling clears `syncing` once it stops
         } catch (err) {
             setError(`Could not cancel sync: ${String(err)}`);
@@ -102,7 +103,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
     const logout = async () => {
         setBusy(true);
         try {
-            await api.logout(account);
+            await api.logout(id);
             onChanged();
         } finally {
             setBusy(false);
@@ -113,7 +114,7 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
         if (!window.confirm(`Remove ${account}? This forgets its session and stops backing it up. Photos already archived are kept.`)) return;
         setBusy(true);
         try {
-            await api.removeAccount(account);
+            await api.removeAccount(id);
             onChanged();
         } finally {
             setBusy(false);
@@ -164,11 +165,13 @@ export function Dashboard({ account, onChanged }: { account: string; onChanged: 
                 ) : (
                     <div className="strip">
                         {recent.map(p => (
-                            <Thumb key={p.recordName} account={account} photo={p} />
+                            <Thumb key={p.recordName} accountId={id} photo={p} />
                         ))}
                     </div>
                 )}
             </div>
+
+            <AccountStorage accountId={id} onChange={refresh} />
 
             <Settings onChange={refresh} />
 
@@ -193,14 +196,14 @@ function Stat({ label, value }: { label: string; value: string }) {
     );
 }
 
-function Thumb({ account, photo }: { account: string; photo: Photo }) {
+function Thumb({ accountId, photo }: { accountId: string; photo: Photo }) {
     const thumb = thumbnailResolution(photo);
     const full = 'resOriginalRes' in photo.resources ? 'resOriginalRes' : thumb;
     if (!thumb) return null;
     return (
-        <a className="thumb" href={full ? downloadUrl(account, photo.recordName, full) : undefined} target="_blank" rel="noreferrer"
+        <a className="thumb" href={full ? downloadUrl(accountId, photo.recordName, full) : undefined} target="_blank" rel="noreferrer"
             title={photo.filename ?? photo.recordName}>
-            <img loading="lazy" src={downloadUrl(account, photo.recordName, thumb)} alt={photo.filename ?? photo.recordName} />
+            <img loading="lazy" src={downloadUrl(accountId, photo.recordName, thumb)} alt={photo.filename ?? photo.recordName} />
             {photo.isFavorite && <span className="fav">★</span>}
         </a>
     );

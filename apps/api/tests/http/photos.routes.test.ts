@@ -27,8 +27,10 @@ class FakeArchive {
 
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
-const ACCOUNT = 'me@icloud.com';
-const acct = `/icloud/accounts/${ACCOUNT}`;
+const ACCOUNT_ID = '44444444-4444-4444-8444-444444444444';
+const ID_A = '11111111-1111-4111-8111-111111111111';
+const ID_B = '22222222-2222-4222-8222-222222222222';
+const acct = `/icloud/accounts/${ACCOUNT_ID}`;
 
 function photo(recordName: string, overrides: Partial<SyncedPhoto> = {}): SyncedPhoto {
     return {
@@ -61,19 +63,19 @@ const STATS: PhotoStats = {
 
 /** In-memory stand-in for the repository's read surface. */
 class FakeRepo {
-    lastList?: { account: string; options: ListPhotosOptions };
+    lastList?: { id: string; options: ListPhotosOptions };
     listImpl: () => ListPhotosResult = () => ({ photos: [photo('A')], total: 1 });
     getImpl: (recordName: string) => SyncedPhoto | null = () => null;
     statsImpl: () => PhotoStats = () => STATS;
 
-    list(account: string, options: ListPhotosOptions): Promise<ListPhotosResult> {
-        this.lastList = { account, options };
+    list(id: string, options: ListPhotosOptions): Promise<ListPhotosResult> {
+        this.lastList = { id, options };
         return Promise.resolve(this.listImpl());
     }
-    get(_account: string, recordName: string): Promise<SyncedPhoto | null> {
+    get(_id: string, recordName: string): Promise<SyncedPhoto | null> {
         return Promise.resolve(this.getImpl(recordName));
     }
-    stats(_account: string): Promise<PhotoStats> {
+    stats(_id: string): Promise<PhotoStats> {
         return Promise.resolve(this.statsImpl());
     }
 }
@@ -122,14 +124,14 @@ describe('icloud photos routes', () => {
     let broker: FakeBroker;
     let archive: FakeArchive;
     let syncRegistry: SyncRegistry;
-    let icloud: { download: (account: string, url: string) => Promise<Uint8Array>; listAccounts: () => Promise<string[]> };
+    let icloud: { download: (id: string, url: string) => Promise<Uint8Array>; listAccounts: () => Promise<Array<{ id: string; account: string }>> };
 
     beforeEach(() => {
         repo = new FakeRepo();
         broker = new FakeBroker();
         archive = new FakeArchive();
         syncRegistry = new SyncRegistry();
-        icloud = { download: async () => new Uint8Array([1, 2, 3]), listAccounts: async () => [ACCOUNT] };
+        icloud = { download: async () => new Uint8Array([1, 2, 3]), listAccounts: async () => [{ id: ACCOUNT_ID, account: 'me@icloud.com' }] };
 
         const registry = createRegistry();
         registry.register(Logger).useInstance(silentLogger);
@@ -150,7 +152,7 @@ describe('icloud photos routes', () => {
     it('reports backup stats with the schedule and running state', async () => {
         const res = await fetch(`${base}${acct}/stats`);
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ account: 'me@icloud.com', schedule: '0 */6 * * *', running: false, ...STATS });
+        expect(await res.json()).toEqual({ id: ACCOUNT_ID, schedule: '0 */6 * * *', running: false, ...STATS });
     });
 
     it('reports running: true while a sync is queued or active for the account', async () => {
@@ -164,7 +166,7 @@ describe('icloud photos routes', () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ photos: [photo('A')], total: 1, limit: 50, offset: 0 });
         expect(repo.lastList).toEqual({
-            account: 'me@icloud.com',
+            id: ACCOUNT_ID,
             options: { limit: 50, offset: 0, favorite: undefined, includeHidden: undefined, includeDeleted: undefined, order: 'desc' },
         });
     });
@@ -184,6 +186,12 @@ describe('icloud photos routes', () => {
     it('rejects an out-of-range limit with 400', async () => {
         const res = await fetch(`${base}${acct}/photos?limit=9999`);
         expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-UUID account path with 400', async () => {
+        const res = await fetch(`${base}/icloud/accounts/not-a-uuid/photos`);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ details: { reason: 'account_required' } });
     });
 
     it('returns a single photo', async () => {
@@ -209,8 +217,8 @@ describe('icloud photos routes', () => {
     });
 
     it('serves the archived original from storage when backed up', async () => {
-        archive.files.set('me@icloud.com/A/A.jpg', new Uint8Array([9, 9, 9, 9]));
-        repo.getImpl = () => photo('A', { backupKey: 'me@icloud.com/A/A.jpg', backupSize: 4 });
+        archive.files.set(`${ACCOUNT_ID}/A/A.jpg`, new Uint8Array([9, 9, 9, 9]));
+        repo.getImpl = () => photo('A', { backupKey: `${ACCOUNT_ID}/A/A.jpg`, backupSize: 4 });
         let liveCalled = false;
         icloud.download = async () => {
             liveCalled = true;
@@ -241,7 +249,7 @@ describe('icloud photos routes', () => {
         expect(await res.json()).toMatchObject({ details: { reason: 'icloud_upstream_error' } });
     });
 
-    it('enqueues a per-account sync and injects the account into the payload', async () => {
+    it('enqueues a per-account sync and injects the account id into the payload', async () => {
         const res = await fetch(`${base}${acct}/sync`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -249,31 +257,34 @@ describe('icloud photos routes', () => {
         });
         expect(res.status).toBe(202);
         expect(await res.json()).toEqual({ queued: true, job: 'icloud/sync-photos', jobId: 'job-1' });
-        expect(broker.sent).toEqual([{ name: 'icloud/sync-photos', payload: { smartAlbum: 'FAVORITE', pageSize: 50, accountName: ACCOUNT } }]);
+        expect(broker.sent).toEqual([{ name: 'icloud/sync-photos', payload: { smartAlbum: 'FAVORITE', pageSize: 50, accountId: ACCOUNT_ID } }]);
     });
 
     it('enqueues a per-account sync with an empty body', async () => {
         const res = await fetch(`${base}${acct}/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         expect(res.status).toBe(202);
         expect(await res.json()).toEqual({ queued: true, job: 'icloud/sync-photos', jobId: 'job-1' });
-        expect(broker.sent).toEqual([{ name: 'icloud/sync-photos', payload: { accountName: ACCOUNT } }]);
+        expect(broker.sent).toEqual([{ name: 'icloud/sync-photos', payload: { accountId: ACCOUNT_ID } }]);
     });
 
     it('fans an all-account sync out into one job per registered account', async () => {
-        icloud.listAccounts = async () => ['a@icloud.com', 'b@icloud.com'];
+        icloud.listAccounts = async () => [
+            { id: ID_A, account: 'a@icloud.com' },
+            { id: ID_B, account: 'b@icloud.com' },
+        ];
         const res = await fetch(`${base}/icloud/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         expect(res.status).toBe(202);
         expect(await res.json()).toEqual({
             queued: 2,
             job: 'icloud/sync-photos',
             jobs: [
-                { account: 'a@icloud.com', jobId: 'job-1' },
-                { account: 'b@icloud.com', jobId: 'job-2' },
+                { id: ID_A, jobId: 'job-1' },
+                { id: ID_B, jobId: 'job-2' },
             ],
         });
         expect(broker.sent).toEqual([
-            { name: 'icloud/sync-photos', payload: { accountName: 'a@icloud.com' } },
-            { name: 'icloud/sync-photos', payload: { accountName: 'b@icloud.com' } },
+            { name: 'icloud/sync-photos', payload: { accountId: ID_A } },
+            { name: 'icloud/sync-photos', payload: { accountId: ID_B } },
         ]);
     });
 
@@ -302,7 +313,10 @@ describe('icloud photos routes', () => {
     });
 
     it('cancels every in-flight sync and returns the count', async () => {
-        icloud.listAccounts = async () => ['a@icloud.com', 'b@icloud.com'];
+        icloud.listAccounts = async () => [
+            { id: ID_A, account: 'a@icloud.com' },
+            { id: ID_B, account: 'b@icloud.com' },
+        ];
         await fetch(`${base}/icloud/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
         const res = await fetch(`${base}/icloud/sync/cancel`, { method: 'POST' });
         expect(res.status).toBe(200);

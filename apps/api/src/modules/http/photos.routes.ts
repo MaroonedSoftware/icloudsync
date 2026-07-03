@@ -8,9 +8,10 @@ import { PhotoArchive } from '../icloud/storage/photo.archive.js';
 import { PhotosRepository } from '../icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../icloud/sync/sync.registry.js';
 import { SYNC_PHOTOS_JOB } from '../icloud/sync/sync.photos.job.js';
+import { inFlightJobId } from '../icloud/sync/job.status.js';
 import { dispatchSync, enqueueSync } from '../icloud/sync/sync.dispatch.js';
 import { SettingsService } from '../settings/settings.service.js';
-import { accountParam, withICloudErrors } from './route.helpers.js';
+import { accountIdParam, withICloudErrors } from './route.helpers.js';
 
 /** Whether a rendition key refers to the full-resolution original (what the archive stores). */
 function isOriginal(resolution: string): boolean {
@@ -57,42 +58,31 @@ const syncSchema = z
     })
     .default({});
 
-/** pg-boss states that mean a sync job is still queued or executing. */
-const IN_FLIGHT_STATES = new Set(['created', 'active', 'retry']);
-
-/**
- * The id of the account's tracked sync job if it is still queued or running,
- * else `undefined`. Consulting the broker (rather than trusting the registry
- * alone) means a stale entry for a job that has since finished correctly reads
- * as "not running".
- */
-async function inFlightSyncJob(broker: JobBroker, registry: SyncRegistry, account: string): Promise<string | undefined> {
-    const id = registry.jobId(account);
-    if (!id) return undefined;
-    const info = await broker.getJob(SYNC_PHOTOS_JOB, id);
-    return info && IN_FLIGHT_STATES.has(info.state) ? id : undefined;
+/** The id of the account's tracked sync job if it is still queued or running, else `undefined`. */
+function inFlightSyncJob(broker: JobBroker, registry: SyncRegistry, accountId: string): Promise<string | undefined> {
+    return inFlightJobId(broker, SYNC_PHOTOS_JOB, registry.jobId(accountId));
 }
 
 /**
- * Router for the synced iCloud Photos library, scoped per account
- * (`/icloud/accounts/:account/…`). Reads are served from the Postgres mirror the
- * sync job populates (fast, paginated, available even when the iCloud session
- * has lapsed); binary downloads proxy back to iCloud using the rendition's
- * signed URL recorded at sync time.
+ * Router for the synced iCloud Photos library, scoped per account by id
+ * (`/icloud/accounts/:accountId/…`). Reads are served from the Postgres mirror
+ * the sync job populates (fast, paginated, available even when the iCloud
+ * session has lapsed); binary downloads proxy back to iCloud using the
+ * rendition's signed URL recorded at sync time.
  *
- * - `GET /icloud/accounts/:account/stats` — aggregate backup stats, the sync
+ * - `GET /icloud/accounts/:accountId/stats` — aggregate backup stats, the sync
  *   schedule, and whether a sync is currently running for the account.
- * - `GET /icloud/accounts/:account/photos` — page the synced library (`limit`,
+ * - `GET /icloud/accounts/:accountId/photos` — page the synced library (`limit`,
  *   `offset`, `favorite`, `includeHidden`, `includeDeleted`, `order`).
- * - `GET /icloud/accounts/:account/photos/:recordName` — one synced asset's metadata.
- * - `GET /icloud/accounts/:account/photos/:recordName/download?resolution=resOriginalRes` —
+ * - `GET /icloud/accounts/:accountId/photos/:recordName` — one synced asset's metadata.
+ * - `GET /icloud/accounts/:accountId/photos/:recordName/download?resolution=resOriginalRes` —
  *   stream a rendition's bytes through the API.
- * - `POST /icloud/accounts/:account/sync` — enqueue an on-demand sync of one
+ * - `POST /icloud/accounts/:accountId/sync` — enqueue an on-demand sync of one
  *   account; body is an optional {@link SyncPhotosPayload}. Returns `202
  *   { queued: true, job, jobId }`.
  * - `POST /icloud/sync` — fan a sync out across **every** registered account,
- *   one job each (`202 { queued: <count>, job, jobs: [{ account, jobId }] }`).
- * - `POST /icloud/accounts/:account/sync/cancel` — request cancellation of the
+ *   one job each (`202 { queued: <count>, job, jobs: [{ id, jobId }] }`).
+ * - `POST /icloud/accounts/:accountId/sync/cancel` — request cancellation of the
  *   account's queued-or-running sync via `JobBroker.cancel` (`{ cancelled }` is
  *   whether a live job was found to cancel).
  * - `POST /icloud/sync/cancel` — cancel every tracked in-flight sync
@@ -102,38 +92,38 @@ export function icloudPhotosRouter() {
     const router = ServerKitRouter();
     const json = bodyParserMiddleware(['application/json']);
 
-    router.get('/icloud/accounts/:account/stats', async ctx => {
+    router.get('/icloud/accounts/:accountId/stats', async ctx => {
         const repo = ctx.container.get(PhotosRepository);
         const settings = ctx.container.get(SettingsService);
-        const account = accountParam(ctx);
-        const [stats, schedule] = await Promise.all([repo.stats(account), settings.syncCron()]);
-        const jobId = await inFlightSyncJob(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), account);
-        ctx.body = { account, schedule, running: jobId !== undefined, ...stats };
+        const id = accountIdParam(ctx);
+        const [stats, schedule] = await Promise.all([repo.stats(id), settings.syncCron()]);
+        const jobId = await inFlightSyncJob(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), id);
+        ctx.body = { id, schedule, running: jobId !== undefined, ...stats };
     });
 
-    router.get('/icloud/accounts/:account/photos', async ctx => {
+    router.get('/icloud/accounts/:accountId/photos', async ctx => {
         const repo = ctx.container.get(PhotosRepository);
-        const account = accountParam(ctx);
+        const id = accountIdParam(ctx);
         const { limit, offset, favorite, includeHidden, includeDeleted, order } = await parseAndValidate(ctx.query, listQuerySchema);
-        const { photos, total } = await repo.list(account, { limit, offset, favorite, includeHidden, includeDeleted, order });
+        const { photos, total } = await repo.list(id, { limit, offset, favorite, includeHidden, includeDeleted, order });
         ctx.body = { photos, total, limit, offset };
     });
 
-    router.get('/icloud/accounts/:account/photos/:recordName', async ctx => {
+    router.get('/icloud/accounts/:accountId/photos/:recordName', async ctx => {
         const repo = ctx.container.get(PhotosRepository);
-        const account = accountParam(ctx);
-        const photo = await repo.get(account, ctx.params.recordName ?? '');
+        const id = accountIdParam(ctx);
+        const photo = await repo.get(id, ctx.params.recordName ?? '');
         if (!photo) throw new HttpError(404).withDetails({ reason: 'photo_not_found' });
         ctx.body = photo;
     });
 
-    router.get('/icloud/accounts/:account/photos/:recordName/download', async ctx => {
+    router.get('/icloud/accounts/:accountId/photos/:recordName/download', async ctx => {
         const icloud = ctx.container.get(ICloudService);
         const repo = ctx.container.get(PhotosRepository);
-        const account = accountParam(ctx);
+        const id = accountIdParam(ctx);
         const { resolution } = await parseAndValidate(ctx.query, downloadQuerySchema);
 
-        const photo = await repo.get(account, ctx.params.recordName ?? '');
+        const photo = await repo.get(id, ctx.params.recordName ?? '');
         if (!photo) throw new HttpError(404).withDetails({ reason: 'photo_not_found' });
 
         const filename = (photo.filename ?? photo.recordName).replace(/"/g, '');
@@ -156,13 +146,13 @@ export function icloudPhotosRouter() {
 
         const url = photo.resources[resolution]?.downloadURL;
         if (!url) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
-        ctx.body = Buffer.from(await withICloudErrors(() => icloud.download(account, url)));
+        ctx.body = Buffer.from(await withICloudErrors(() => icloud.download(id, url)));
     });
 
-    router.post('/icloud/accounts/:account/sync', json, async ctx => {
-        const account = accountParam(ctx);
+    router.post('/icloud/accounts/:accountId/sync', json, async ctx => {
+        const id = accountIdParam(ctx);
         const options = await parseAndValidate(ctx.body, syncSchema);
-        const jobId = await enqueueSync(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), account, options);
+        const jobId = await enqueueSync(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), id, options);
         ctx.status = 202;
         ctx.body = { queued: true, job: SYNC_PHOTOS_JOB, jobId };
     });
@@ -170,17 +160,22 @@ export function icloudPhotosRouter() {
     router.post('/icloud/sync', json, async ctx => {
         const options = await parseAndValidate(ctx.body, syncSchema);
         const accounts = await ctx.container.get(ICloudService).listAccounts();
-        const jobs = await dispatchSync(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), accounts, options);
+        const jobs = await dispatchSync(
+            ctx.container.get(JobBroker),
+            ctx.container.get(SyncRegistry),
+            accounts.map(a => a.id),
+            options,
+        );
         ctx.status = 202;
         ctx.body = { queued: jobs.length, job: SYNC_PHOTOS_JOB, jobs };
     });
 
-    router.post('/icloud/accounts/:account/sync/cancel', async ctx => {
+    router.post('/icloud/accounts/:accountId/sync/cancel', async ctx => {
         const broker = ctx.container.get(JobBroker);
-        const account = accountParam(ctx);
+        const id = accountIdParam(ctx);
         // Cancel marks the pg-boss row cancelled; the runner aborts the handler's
         // signal on its next poll (whether the job was still queued or running).
-        const jobId = await inFlightSyncJob(broker, ctx.container.get(SyncRegistry), account);
+        const jobId = await inFlightSyncJob(broker, ctx.container.get(SyncRegistry), id);
         if (jobId) await broker.cancel(SYNC_PHOTOS_JOB, jobId);
         ctx.body = { cancelled: jobId !== undefined };
     });
@@ -188,7 +183,7 @@ export function icloudPhotosRouter() {
     router.post('/icloud/sync/cancel', async ctx => {
         const broker = ctx.container.get(JobBroker);
         const registry = ctx.container.get(SyncRegistry);
-        const ids = (await Promise.all(registry.accounts().map(account => inFlightSyncJob(broker, registry, account)))).filter(
+        const ids = (await Promise.all(registry.accounts().map(accountId => inFlightSyncJob(broker, registry, accountId)))).filter(
             (id): id is string => id !== undefined,
         );
         if (ids.length) await broker.cancel(SYNC_PHOTOS_JOB, ids);

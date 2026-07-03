@@ -23,6 +23,8 @@ export function Login({
     const [error, setError] = useState<string>();
 
     const [accountName, setAccountName] = useState(account);
+    // The account's UUID, learned from the create/login response and used for the 2FA calls.
+    const [accountId, setAccountId] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [method, setMethod] = useState<Method>('device');
@@ -48,10 +50,10 @@ export function Login({
     const submitPassword = (e: React.FormEvent) => {
         e.preventDefault();
         void run(async () => {
-            const name = accountName.trim();
-            const result = await api.login(name, password);
+            const result = await api.createAccount(accountName.trim(), password);
+            setAccountId(result.id);
             setPassword('');
-            if (result.state === 'authenticated') onAuthenticated(name);
+            if (result.state === 'authenticated') onAuthenticated(result.id);
             else setStep('mfa');
         });
     };
@@ -62,11 +64,10 @@ export function Login({
     useEffect(() => {
         if (step !== 'mfa') return;
         void run(async () => {
-            const name = accountName.trim();
-            const opts = await api.twoFactorOptions(name);
+            const opts = await api.twoFactorOptions(accountId);
             setOptions(opts);
             setPhoneId(opts.phoneNumbers[0]?.id);
-            await api.requestDeviceCode(name);
+            await api.requestDeviceCode(accountId);
             setDeviceSent(true);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,23 +75,22 @@ export function Login({
 
     const sendDevice = () =>
         void run(async () => {
-            await api.requestDeviceCode(accountName.trim());
+            await api.requestDeviceCode(accountId);
             setDeviceSent(true);
         });
 
     const sendPhone = () =>
         void run(async () => {
             if (phoneId == null) return;
-            await api.requestPhoneCode(accountName.trim(), phoneId);
+            await api.requestPhoneCode(accountId, phoneId);
             setPhoneSent(true);
         });
 
     const submitCode = (e: React.FormEvent) => {
         e.preventDefault();
         void run(async () => {
-            const name = accountName.trim();
-            const result = method === 'device' ? await api.submitDeviceCode(name, code) : await api.verifyPhoneCode(name, phoneId!, code);
-            if (result.state === 'authenticated') onAuthenticated(name);
+            const result = method === 'device' ? await api.submitDeviceCode(accountId, code) : await api.verifyPhoneCode(accountId, phoneId!, code);
+            if (result.state === 'authenticated') onAuthenticated(accountId);
             else setError('Still not authenticated — check the code and try again.');
         });
     };

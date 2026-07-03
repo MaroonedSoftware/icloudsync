@@ -2,30 +2,28 @@ import { HttpError } from '@maroonedsoftware/errors';
 import type { ServerKitContext } from '@maroonedsoftware/koa';
 import { AuthenticationError, PcsRequiredError } from '@icloudsync/icloud';
 import { describe, expect, it } from 'vitest';
-import { accountParam, withICloudErrors } from '../../src/modules/http/route.helpers.js';
+import { accountIdParam, withICloudErrors } from '../../src/modules/http/route.helpers.js';
 
 /** Build a minimal context carrying only the route params the helper reads. */
 function contextWith(params: Record<string, string | undefined>): ServerKitContext {
     return { params } as unknown as ServerKitContext;
 }
 
-describe('accountParam', () => {
-    it('returns the account from the route params', () => {
-        expect(accountParam(contextWith({ account: 'user@example.com' }))).toBe('user@example.com');
+const UUID = '44444444-4444-4444-8444-444444444444';
+
+describe('accountIdParam', () => {
+    it('returns the account id (UUID) from the route params', () => {
+        expect(accountIdParam(contextWith({ accountId: UUID }))).toBe(UUID);
     });
 
-    it('trims surrounding whitespace', () => {
-        expect(accountParam(contextWith({ account: '  user@example.com  ' }))).toBe('user@example.com');
-    });
-
-    it('accepts the minimum length of three characters', () => {
-        expect(accountParam(contextWith({ account: 'abc' }))).toBe('abc');
+    it('trims surrounding whitespace around the UUID', () => {
+        expect(accountIdParam(contextWith({ accountId: `  ${UUID}  ` }))).toBe(UUID);
     });
 
     it('throws HTTP 400 account_required when the param is missing', () => {
         try {
-            accountParam(contextWith({}));
-            expect.unreachable('expected accountParam to throw');
+            accountIdParam(contextWith({}));
+            expect.unreachable('expected accountIdParam to throw');
         } catch (error) {
             expect(error).toBeInstanceOf(HttpError);
             expect((error as HttpError).statusCode).toBe(400);
@@ -33,12 +31,13 @@ describe('accountParam', () => {
         }
     });
 
-    it('throws HTTP 400 when the param is shorter than three characters', () => {
-        expect(() => accountParam(contextWith({ account: 'ab' }))).toThrow(HttpError);
+    it('throws HTTP 400 when the param is not a UUID', () => {
+        expect(() => accountIdParam(contextWith({ accountId: 'user@example.com' }))).toThrow(HttpError);
+        expect(() => accountIdParam(contextWith({ accountId: 'abc' }))).toThrow(HttpError);
     });
 
     it('throws HTTP 400 when the param is only whitespace', () => {
-        expect(() => accountParam(contextWith({ account: '   ' }))).toThrow(HttpError);
+        expect(() => accountIdParam(contextWith({ accountId: '   ' }))).toThrow(HttpError);
     });
 });
 

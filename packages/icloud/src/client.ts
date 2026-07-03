@@ -29,6 +29,7 @@ export class ICloudClient {
     private readonly storage: SessionStore;
     private readonly accountName: string;
     private readonly fetchImpl: ClientConfig['fetch'];
+    private readonly retry: ClientConfig['retry'];
     private readonly debug: boolean;
     private jar: CookieJar;
     private http: HttpClient;
@@ -40,6 +41,7 @@ export class ICloudClient {
         this.accountName = config.accountName;
         this.storage = config.sessionStore ?? new FileSessionStore();
         this.fetchImpl = config.fetch;
+        this.retry = config.retry;
         this.debug = config.debug ?? false;
         this.session = {
             version: SESSION_VERSION,
@@ -53,7 +55,7 @@ export class ICloudClient {
     }
 
     private newHttp(): HttpClient {
-        return this.fetchImpl ? new HttpClient(this.jar, this.fetchImpl) : new HttpClient(this.jar);
+        return new HttpClient(this.jar, this.fetchImpl ?? fetch, this.retry);
     }
 
     private storageKey(): string {

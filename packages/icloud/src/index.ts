@@ -1,5 +1,6 @@
 export { ICloudClient } from './client.js';
-export type { HttpResponse } from './http/client.js';
+export { parseRetryAfter } from './http/client.js';
+export type { HttpResponse, RetryOptions } from './http/client.js';
 
 export { CookieJar } from './http/cookies.js';
 export type { StoredCookie } from './http/cookies.js';
@@ -15,7 +16,7 @@ export { SrpSession } from './srp/client.srp.js';
 export { PhotosService } from './services/photos.js';
 export type { ICloudRequester, ListOptions, PhotoAlbum, PhotoAsset, PhotoResource, SmartAlbum, SortDirection } from './services/photos.js';
 
-export { ICloudError, AuthenticationError, MfaRequiredError, InvalidSecurityCodeError, PcsRequiredError } from './errors.js';
+export { ICloudError, AuthenticationError, MfaRequiredError, InvalidSecurityCodeError, PcsRequiredError, RateLimitError } from './errors.js';
 
 export type { AuthSession, ClientConfig, DsInfo, LoginResult, TwoFactorOptions, TwoFactorPhone, WebserviceEntry, WebservicesMap } from './types.js';
 

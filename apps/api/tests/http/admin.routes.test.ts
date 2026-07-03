@@ -12,6 +12,9 @@ import { SettingsService } from '../../src/modules/settings/settings.service.js'
 
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
+const ID_A = '11111111-1111-4111-8111-111111111111';
+const ID_B = '22222222-2222-4222-8222-222222222222';
+
 const statsFor = (total: number): PhotoStats => ({
     total,
     favorites: 1,
@@ -28,11 +31,11 @@ describe('icloud admin routes', () => {
 
     beforeEach(() => {
         const statuses: AccountStatus[] = [
-            { account: 'a@icloud.com', authenticated: true },
-            { account: 'b@icloud.com', authenticated: false },
+            { id: ID_A, account: 'a@icloud.com', authenticated: true },
+            { id: ID_B, account: 'b@icloud.com', authenticated: false },
         ];
         const icloud = { accountsStatus: async () => statuses };
-        const repo = { stats: async (account: string) => statsFor(account === 'a@icloud.com' ? 10 : 0) };
+        const repo = { stats: async (id: string) => statsFor(id === ID_A ? 10 : 0) };
         const settings = { syncCron: async () => '0 */6 * * *' };
 
         const registry = createRegistry();
@@ -54,8 +57,8 @@ describe('icloud admin routes', () => {
         const body = await res.json();
         expect(body.schedule).toBe('0 */6 * * *');
         expect(body.accounts).toEqual([
-            { account: 'a@icloud.com', authenticated: true, ...statsFor(10) },
-            { account: 'b@icloud.com', authenticated: false, ...statsFor(0) },
+            { id: ID_A, account: 'a@icloud.com', authenticated: true, ...statsFor(10) },
+            { id: ID_B, account: 'b@icloud.com', authenticated: false, ...statsFor(0) },
         ]);
     });
 });

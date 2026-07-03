@@ -10,7 +10,6 @@ import { AccountsService } from '../../accounts/accounts.service.js';
 import { databaseUrl, loadAppConfig, type AppConfigShape } from '../../config/app.config.js';
 import { registerData } from '../../data/data.module.js';
 import type { DB } from '../../data/kysely.js';
-import { PostgresStorageProvider } from '../../data/postgres.storage.provider.js';
 import { SettingsService } from '../../settings/settings.service.js';
 import { NotificationsService, registerNotifications } from '../../notifications/index.js';
 import { ICloudConfig } from '../icloud.config.js';
@@ -22,6 +21,8 @@ import { SyncRegistry } from './sync.registry.js';
 import { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 import { SYNC_PHOTOS_JOB, SyncPhotosJob, type SyncPhotosPayload } from './sync.photos.job.js';
 import { SYNC_SWEEP_JOB, SweepPhotosJob } from './sync.dispatch.js';
+import { RELOCATE_ARCHIVE_JOB, RelocateArchiveJob } from './relocate.archive.job.js';
+import { RelocateRegistry } from './relocate.registry.js';
 
 export { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 
@@ -41,6 +42,10 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
         .register(SyncRegistry)
         .useFactory(() => new SyncRegistry())
         .asSingleton();
+    registry
+        .register(RelocateRegistry)
+        .useFactory(() => new RelocateRegistry())
+        .asSingleton();
     registerNotifications(registry);
     registry
         .register(SyncPhotosJob)
@@ -53,12 +58,20 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
                     container.get(Logger),
                     container.get(SettingsService),
                     container.get(NotificationsService),
+                    container.get(AccountsService),
                 ),
         )
         .asSingleton();
     registry
         .register(SweepPhotosJob)
         .useFactory(container => new SweepPhotosJob(container.get(ICloudService), container.get(JobBroker), container.get(SyncRegistry)))
+        .asSingleton();
+    registry
+        .register(RelocateArchiveJob)
+        .useFactory(
+            container =>
+                new RelocateArchiveJob(container.get(PhotoArchive), container.get(PhotosRepository), container.get(AccountsService), container.get(Logger)),
+        )
         .asSingleton();
 }
 
@@ -72,6 +85,7 @@ export function buildPhotoSyncRegistry(cron: string = DEFAULT_SYNC_CRON): PgBoss
     const registrations = new PgBossJobRegistryMap();
     registrations.set(SYNC_PHOTOS_JOB, SyncPhotosJob);
     registrations.set(SYNC_SWEEP_JOB, { job: SweepPhotosJob, cron });
+    registrations.set(RELOCATE_ARCHIVE_JOB, RelocateArchiveJob);
     return registrations;
 }
 
@@ -102,7 +116,7 @@ export async function startSyncEngine(connectionString: string, logger: Logger, 
     const pgboss = new PgBoss(connectionString);
     await pgboss.start();
     const registrations = buildPhotoSyncRegistry(cron);
-    for (const queue of [SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB]) {
+    for (const queue of [SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB, RELOCATE_ARCHIVE_JOB]) {
         if (!(await pgboss.getQueue(queue))) await pgboss.createQueue(queue);
     }
     const broker = new PgBossJobBroker(registrations, pgboss, new PgBossConnectionProvider());
@@ -125,7 +139,7 @@ export interface PhotoSyncWorkerOptions {
     cron?: string;
     connectionString?: string;
     config?: ICloudConfig;
-    /** Storage backend for the encrypted session (defaults to local disk). */
+    /** Storage backend for the archived photo bytes (defaults to local disk under `config.photosDir`). */
     storage?: StorageProvider;
 }
 
@@ -162,7 +176,7 @@ export async function startPhotoSyncWorker(options: PhotoSyncWorkerOptions = {})
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
     registry.register(AccountsService).useInstance(new AccountsService(db));
-    await registerICloud(registry, config, options.storage ?? new PostgresStorageProvider(db));
+    await registerICloud(registry, config, db, options.storage);
     registerPhotoSync(registry);
 
     const cron = options.cron ?? (await settings.syncCron());

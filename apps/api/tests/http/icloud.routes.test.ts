@@ -7,26 +7,27 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeServer } from '../_helpers/server.js';
 import { registerBodyParser } from '../../src/modules/http/body.parser.js';
 import { createApiApp } from '../../src/modules/http/server.js';
-import { ICloudService, type AccountStatus } from '../../src/modules/icloud/icloud.service.js';
+import { ICloudService, type AccountLoginResult, type AccountStatus } from '../../src/modules/icloud/icloud.service.js';
 
 /** Quiet logger so the error middleware doesn't spam the test output. */
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
 const ACCOUNT = 'me@icloud.com';
+const ACCOUNT_ID = '44444444-4444-4444-8444-444444444444';
 
 /**
  * Configurable stand-in for {@link ICloudService}. Each auth method either
  * returns a canned {@link LoginResult} or throws the configured error, and
- * records the account it was called with, so the per-account routes can be
+ * records the account id it was called with, so the per-account routes can be
  * exercised without touching Apple's servers.
  */
 class FakeICloud {
     authenticated = false;
-    statusImpl: () => Promise<AccountStatus[]> = async () => [{ account: ACCOUNT, authenticated: this.authenticated }];
+    statusImpl: () => Promise<AccountStatus[]> = async () => [{ id: ACCOUNT_ID, account: ACCOUNT, authenticated: this.authenticated }];
     loginImpl: () => Promise<LoginResult> = async () => ({ state: 'mfaRequired' });
     codeImpl: () => Promise<LoginResult> = async () => ({ state: 'authenticated' });
     optionsImpl: () => Promise<TwoFactorOptions> = async () => ({ trustedDeviceCount: 1, phoneNumbers: [{ id: 2, number: '+1 (•••) •••-4242' }] });
-    phoneCalls: Array<{ account: string; code?: string; phoneId: number }> = [];
+    phoneCalls: Array<{ id: string; code?: string; phoneId: number }> = [];
     deviceCodeRequests: string[] = [];
     lastLoginAccount?: string;
     loggedOut?: string;
@@ -35,12 +36,12 @@ class FakeICloud {
     accountsStatus(): Promise<AccountStatus[]> {
         return this.statusImpl();
     }
-    isAuthenticated(_account: string): boolean {
+    isAuthenticated(_id: string): boolean {
         return this.authenticated;
     }
-    login(account: string): Promise<LoginResult> {
-        this.lastLoginAccount = account;
-        return this.loginImpl();
+    async login(accountName: string): Promise<AccountLoginResult> {
+        this.lastLoginAccount = accountName;
+        return { ...(await this.loginImpl()), id: ACCOUNT_ID };
     }
     submitSecurityCode(): Promise<LoginResult> {
         return this.codeImpl();
@@ -48,24 +49,24 @@ class FakeICloud {
     getTwoFactorOptions(): Promise<TwoFactorOptions> {
         return this.optionsImpl();
     }
-    requestDeviceCode(account: string): Promise<void> {
-        this.deviceCodeRequests.push(account);
+    requestDeviceCode(id: string): Promise<void> {
+        this.deviceCodeRequests.push(id);
         return Promise.resolve();
     }
-    requestPhoneCode(account: string, phoneId: number): Promise<void> {
-        this.phoneCalls.push({ account, phoneId });
+    requestPhoneCode(id: string, phoneId: number): Promise<void> {
+        this.phoneCalls.push({ id, phoneId });
         return Promise.resolve();
     }
-    submitPhoneCode(account: string, code: string, phoneId: number): Promise<LoginResult> {
-        this.phoneCalls.push({ account, code, phoneId });
+    submitPhoneCode(id: string, code: string, phoneId: number): Promise<LoginResult> {
+        this.phoneCalls.push({ id, code, phoneId });
         return this.codeImpl();
     }
-    logout(account: string): Promise<void> {
-        this.loggedOut = account;
+    logout(id: string): Promise<void> {
+        this.loggedOut = id;
         return Promise.resolve();
     }
-    remove(account: string): Promise<void> {
-        this.removed = account;
+    remove(id: string): Promise<void> {
+        this.removed = id;
         return Promise.resolve();
     }
 }
@@ -88,36 +89,41 @@ describe('icloud auth routes', () => {
 
     afterEach(() => closeServer(server));
 
-    const acct = `/icloud/accounts/${ACCOUNT}`;
+    const acct = `/icloud/accounts/${ACCOUNT_ID}`;
     const post = (path: string, body?: unknown, headers: Record<string, string> = { 'content-type': 'application/json' }) =>
         fetch(`${base}${path}`, { method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
 
-    it('lists the registered accounts with auth status', async () => {
+    it('lists the registered accounts with id + auth status', async () => {
         const res = await fetch(`${base}/icloud/accounts`);
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ accounts: [{ account: ACCOUNT, authenticated: false }] });
+        expect(await res.json()).toEqual({ accounts: [{ id: ACCOUNT_ID, account: ACCOUNT, authenticated: false }] });
     });
 
-    it('reports one account status without auth', async () => {
+    it('reports one account status by id', async () => {
         const res = await fetch(`${base}${acct}/status`);
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ account: ACCOUNT, authenticated: false });
+        expect(await res.json()).toEqual({ id: ACCOUNT_ID, authenticated: false });
     });
 
-    it('returns the login outcome (mfa required) and passes the account through', async () => {
-        const res = await post(`${acct}/login`, { password: 'hunter2' });
+    it('creates an account and returns its id + the login outcome (mfa required)', async () => {
+        const res = await post('/icloud/accounts', { accountName: ACCOUNT, password: 'hunter2' });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ state: 'mfaRequired' });
+        expect(await res.json()).toEqual({ id: ACCOUNT_ID, state: 'mfaRequired' });
         expect(fake.lastLoginAccount).toBe(ACCOUNT);
     });
 
-    it('rejects a login with an empty password with 400', async () => {
-        const res = await post(`${acct}/login`, { password: '' });
+    it('rejects a create with an empty password with 400', async () => {
+        const res = await post('/icloud/accounts', { accountName: ACCOUNT, password: '' });
         expect(res.status).toBe(400);
     });
 
-    it('rejects a login for a too-short account path with 400', async () => {
-        const res = await post('/icloud/accounts/ab/login', { password: 'hunter2' });
+    it('rejects a create with a too-short accountName with 400', async () => {
+        const res = await post('/icloud/accounts', { accountName: 'ab', password: 'hunter2' });
+        expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-UUID account path with 400', async () => {
+        const res = await fetch(`${base}/icloud/accounts/not-a-uuid/status`);
         expect(res.status).toBe(400);
         expect(await res.json()).toMatchObject({ details: { reason: 'account_required' } });
     });
@@ -141,13 +147,13 @@ describe('icloud auth routes', () => {
         fake.loginImpl = async () => {
             throw new AuthenticationError('bad creds');
         };
-        const res = await post(`${acct}/login`, { password: 'wrong' });
+        const res = await post('/icloud/accounts', { accountName: ACCOUNT, password: 'wrong' });
         expect(res.status).toBe(401);
         expect(await res.json()).toMatchObject({ details: { reason: 'authentication_failed' } });
     });
 
     it('rejects a non-JSON content type with 415', async () => {
-        const res = await post(`${acct}/login`, 'password=x', { 'content-type': 'text/plain' });
+        const res = await post('/icloud/accounts', 'password=x', { 'content-type': 'text/plain' });
         expect(res.status).toBe(415);
     });
 
@@ -161,21 +167,21 @@ describe('icloud auth routes', () => {
         const res = await post(`${acct}/2fa/device`);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ requested: true });
-        expect(fake.deviceCodeRequests).toEqual([ACCOUNT]);
+        expect(fake.deviceCodeRequests).toEqual([ACCOUNT_ID]);
     });
 
     it('requests an SMS code for a phone number', async () => {
         const res = await post(`${acct}/2fa/phone`, { phoneId: 2 });
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ requested: true, phoneId: 2 });
-        expect(fake.phoneCalls).toEqual([{ account: ACCOUNT, phoneId: 2 }]);
+        expect(fake.phoneCalls).toEqual([{ id: ACCOUNT_ID, phoneId: 2 }]);
     });
 
     it('verifies an SMS code and returns authenticated', async () => {
         const res = await post(`${acct}/2fa/phone/verify`, { phoneId: 2, code: '123456' });
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ state: 'authenticated' });
-        expect(fake.phoneCalls).toEqual([{ account: ACCOUNT, phoneId: 2, code: '123456' }]);
+        expect(fake.phoneCalls).toEqual([{ id: ACCOUNT_ID, phoneId: 2, code: '123456' }]);
     });
 
     it('rejects a phone verify missing the phoneId with 400', async () => {
@@ -187,14 +193,14 @@ describe('icloud auth routes', () => {
         const res = await post(`${acct}/logout`);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ state: 'loggedOut' });
-        expect(fake.loggedOut).toBe(ACCOUNT);
+        expect(fake.loggedOut).toBe(ACCOUNT_ID);
     });
 
     it('removes an account entirely', async () => {
         const res = await fetch(`${base}${acct}`, { method: 'DELETE' });
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ state: 'removed' });
-        expect(fake.removed).toBe(ACCOUNT);
+        expect(fake.removed).toBe(ACCOUNT_ID);
     });
 
     it('returns 404 for an unknown route', async () => {

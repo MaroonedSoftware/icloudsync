@@ -10,11 +10,24 @@ import type { DB, Json } from '../../data/kysely.js';
  */
 export interface PhotoStore {
     /** Insert-or-update a batch of assets for an account. Returns the row count written. */
-    upsertBatch(accountName: string, assets: PhotoAsset[]): Promise<number>;
-    /** Map of `recordName → backup_checksum` for assets already backed up to disk (skip set). */
-    backedUpChecksums(accountName: string): Promise<Map<string, string | null>>;
+    upsertBatch(accountId: string, assets: PhotoAsset[]): Promise<number>;
+    /**
+     * Map of `recordName → { checksum, key }` for assets already backed up to disk.
+     * Serves both as the re-sync skip set (compare `checksum`) and as the source of
+     * each asset's existing storage `key`, which the job uses to tell its own prior
+     * copy apart from a genuine name collision when resolving the archive key.
+     */
+    backedUp(accountId: string): Promise<Map<string, BackedUpAsset>>;
     /** Record that an asset's bytes have been archived. */
-    markBackedUp(accountName: string, recordName: string, backup: BackupRecord): Promise<void>;
+    markBackedUp(accountId: string, recordName: string, backup: BackupRecord): Promise<void>;
+}
+
+/** What is known about an asset's existing archived copy (for the sync skip/collision logic). */
+export interface BackedUpAsset {
+    /** Checksum of the archived rendition; `null` when the source reported none. */
+    checksum: string | null;
+    /** Storage key the existing copy lives under, or `null` if not recorded. */
+    key: string | null;
 }
 
 /** Details of an archived copy, recorded against the asset row. */
@@ -95,7 +108,7 @@ const toBigInt = (value: number | undefined): bigint | null => (value === undefi
 
 /**
  * Kysely-backed repository for synced iCloud photos. Upserts are keyed on
- * `(account_name, record_name)` so re-syncing an account is idempotent and
+ * `(account_id, record_name)` so re-syncing an account is idempotent and
  * reflects metadata changes (favourite/hidden/deleted flags, renditions).
  */
 export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore {
@@ -103,11 +116,11 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
         super(db);
     }
 
-    async upsertBatch(accountName: string, assets: PhotoAsset[]): Promise<number> {
+    async upsertBatch(accountId: string, assets: PhotoAsset[]): Promise<number> {
         if (assets.length === 0) return 0;
 
         const rows = assets.map(asset => ({
-            accountName,
+            accountId,
             recordName: asset.recordName,
             masterRecordName: asset.masterRecordName ?? null,
             filename: asset.filename ?? null,
@@ -123,7 +136,7 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
             .insertInto('icloudPhotos')
             .values(rows)
             .onConflict(oc =>
-                oc.columns(['accountName', 'recordName']).doUpdateSet(eb => ({
+                oc.columns(['accountId', 'recordName']).doUpdateSet(eb => ({
                     masterRecordName: eb.ref('excluded.masterRecordName'),
                     filename: eb.ref('excluded.filename'),
                     assetDate: eb.ref('excluded.assetDate'),
@@ -140,21 +153,35 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
         return rows.length;
     }
 
-    async backedUpChecksums(accountName: string): Promise<Map<string, string | null>> {
+    async backedUp(accountId: string): Promise<Map<string, BackedUpAsset>> {
         const rows = await this.db
             .selectFrom('icloudPhotos')
-            .select(['recordName', 'backupChecksum'])
-            .where('accountName', '=', accountName)
+            .select(['recordName', 'backupChecksum', 'backupKey'])
+            .where('accountId', '=', accountId)
             .where('backedUpAt', 'is not', null)
             .execute();
-        return new Map(rows.map(r => [r.recordName, r.backupChecksum]));
+        return new Map(rows.map(r => [r.recordName, { checksum: r.backupChecksum, key: r.backupKey }]));
     }
 
-    async markBackedUp(accountName: string, recordName: string, backup: BackupRecord): Promise<void> {
+    async markBackedUp(accountId: string, recordName: string, backup: BackupRecord): Promise<void> {
         await this.db
             .updateTable('icloudPhotos')
             .set({ backupKey: backup.key, backupSize: BigInt(backup.size), backupChecksum: backup.checksum, backedUpAt: sql`now()` })
-            .where('accountName', '=', accountName)
+            .where('accountId', '=', accountId)
+            .where('recordName', '=', recordName)
+            .execute();
+    }
+
+    /**
+     * Update only the archive key recorded for an asset (its bytes, size, and
+     * checksum are unchanged). Used when an account's archive prefix changes and
+     * its already-backed-up files are relocated to the new path.
+     */
+    async rekeyBackup(accountId: string, recordName: string, key: string): Promise<void> {
+        await this.db
+            .updateTable('icloudPhotos')
+            .set({ backupKey: key })
+            .where('accountId', '=', accountId)
             .where('recordName', '=', recordName)
             .execute();
     }
@@ -162,10 +189,10 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
     /** Apply the shared `(account, favourite, hidden, deleted)` filters to a query. */
     private applyFilters<O>(
         qb: SelectQueryBuilder<DB, 'icloudPhotos', O>,
-        accountName: string,
+        accountId: string,
         options: Pick<ListPhotosOptions, 'favorite' | 'includeHidden' | 'includeDeleted'>,
     ): SelectQueryBuilder<DB, 'icloudPhotos', O> {
-        let query = qb.where('accountName', '=', accountName);
+        let query = qb.where('accountId', '=', accountId);
         if (options.favorite !== undefined) query = query.where('isFavorite', '=', options.favorite);
         if (!options.includeHidden) query = query.where('isHidden', '=', false);
         if (!options.includeDeleted) query = query.where('isDeleted', '=', false);
@@ -173,12 +200,12 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
     }
 
     /** A page of synced photos for an account, with the total matching the same filters. */
-    async list(accountName: string, options: ListPhotosOptions): Promise<ListPhotosResult> {
-        const totalRow = await this.applyFilters(this.db.selectFrom('icloudPhotos'), accountName, options)
+    async list(accountId: string, options: ListPhotosOptions): Promise<ListPhotosResult> {
+        const totalRow = await this.applyFilters(this.db.selectFrom('icloudPhotos'), accountId, options)
             .select(eb => eb.fn.countAll().as('count'))
             .executeTakeFirst();
 
-        const rows = await this.applyFilters(this.db.selectFrom('icloudPhotos'), accountName, options)
+        const rows = await this.applyFilters(this.db.selectFrom('icloudPhotos'), accountId, options)
             .selectAll()
             .orderBy('assetDate', options.order === 'asc' ? 'asc' : 'desc')
             .orderBy('recordName', 'asc')
@@ -190,21 +217,21 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
     }
 
     /** A single synced photo by record name, or null if this account has not synced it. */
-    async get(accountName: string, recordName: string): Promise<SyncedPhoto | null> {
+    async get(accountId: string, recordName: string): Promise<SyncedPhoto | null> {
         const row = await this.db
             .selectFrom('icloudPhotos')
             .selectAll()
-            .where('accountName', '=', accountName)
+            .where('accountId', '=', accountId)
             .where('recordName', '=', recordName)
             .executeTakeFirst();
         return row ? toSyncedPhoto(row) : null;
     }
 
     /** Aggregate backup stats for an account (one round-trip). */
-    async stats(accountName: string): Promise<PhotoStats> {
+    async stats(accountId: string): Promise<PhotoStats> {
         const row = await this.db
             .selectFrom('icloudPhotos')
-            .where('accountName', '=', accountName)
+            .where('accountId', '=', accountId)
             .select(eb => [
                 eb.fn.countAll().as('total'),
                 eb.fn.countAll().filterWhere('isFavorite', '=', true).as('favorites'),

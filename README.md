@@ -34,26 +34,43 @@ are idempotent: an asset's bytes are re-fetched only when its checksum changes,
 so re-runs resume rather than redo. The download proxy serves the archived copy
 when present and falls back to a live iCloud fetch otherwise.
 
-**On-disk organization** is a setting (`photos_layout`, edited in the UI). Files
-keep their original name+extension under a unique `<recordName>/` folder (which
-prevents collisions between same-named photos):
+**On-disk organization** has two independent settings, both edited in the UI:
+which folders assets are filed under (`photos_layout`) and how each file is named
+within its folder (`photos_naming`). Files land directly in their layout folder
+(no per-photo id sub-folder), so the archive is browsable:
 
-| `photos_layout` | Path under `ICLOUD_PHOTOS_DIR` |
+| `photos_layout` | Folder under `ICLOUD_PHOTOS_DIR` |
 |---|---|
-| `flat` (default) | `<account>/<recordName>/<filename>` |
-| `date` | `<account>/YYYY/YYYY-MM/<recordName>/<filename>` (by capture date) |
-| `album` | `<account>/<album>/<recordName>/<filename>` (photos in no album → `Unsorted/`) |
+| `flat` (default) | `<account>/` |
+| `date` | `<account>/YYYY/YYYY-MM/` (by capture date) |
+| `album` | `<account>/<album>/` (photos in no album → `Unsorted/`) |
+
+| `photos_naming` | Filename within the folder |
+|---|---|
+| `clean` (default) | `IMG_0001.HEIC` — original name; a `~<hash>` suffix is added only when a different photo already holds that name |
+| `datetime` | `20240315-143022_IMG_0001.HEIC` — capture timestamp prefixed; sorts chronologically |
+| `hash` | `IMG_0001~a1b2c3.HEIC` — a short per-photo id inserted before the extension; always unique |
+
+`photos_layout` / `photos_naming` are the **global defaults**; each account can
+**override** either one from its dashboard (or `PATCH /icloud/accounts/:accountId/settings`),
+and an unset override inherits the default. The effective value for a sync
+resolves most-specific first: a per-run payload override, else the account's
+override, else the global default.
 
 `date` is free (uses metadata already synced). `album` pages each iCloud album to
 resolve membership (first album wins for a photo in several); if that lookup
-fails it degrades to `Unsorted/` rather than failing the backup.
+fails it degrades to `Unsorted/` rather than failing the backup. All three naming
+schemes are collision-safe, and the collision suffix is derived from the photo's
+stable record id so re-syncs stay idempotent.
 - **`apps/web`** — React + Vite SPA: sign-in (password + device/SMS 2FA), a
-  stats dashboard, recent backups, and a settings panel (layout + schedule).
+  stats dashboard, recent backups, and a settings panel (layout, naming, schedule).
 
 ### Configuration model
 
-Runtime, user-facing settings — the **account**, **photo layout**, and **sync
-schedule** — live in the database (`app_settings`) and are edited in the web UI
+Runtime, user-facing settings — the **account**, **photo layout**, **file
+naming**, and **sync schedule** — live in the database (global defaults in
+`app_settings`, per-account layout/naming overrides on `icloud_accounts`) and are
+edited in the web UI
 (or `PATCH /icloud/settings`); changing the schedule reschedules the worker
 immediately. Only secrets and infra that must exist before the database is
 reachable stay in the environment (see the table below).
@@ -104,10 +121,12 @@ Secrets + infra only; everything user-facing is a DB setting (see above).
 The container also serves `GET /health` — a DB-backed readiness probe (`200`
 when Postgres answers, `503` otherwise) wired to the image's Docker `HEALTHCHECK`.
 
-Database-backed settings (UI / `PATCH /icloud/settings`): `account_name`,
-`photos_layout` (`flat` \| `date` \| `album`), `sync_cron`. The encrypted session
-+ salt are stored in the DB too (`storage_objects`); only the photo bytes use a
-volume, so a deployment needs just `DATABASE_URL` + `ICLOUD_ENCRYPTION_SECRET`.
+Database-backed settings (UI / `PATCH /icloud/settings`): `photos_layout`
+(`flat` \| `date` \| `album`), `photos_naming`, `sync_cron`. Each account is a row
+in `icloud_accounts` keyed by an auto-generated UUID (the Apple ID is a unique
+attribute); its encrypted session lives on that row (the `session` column) and
+the Argon2id salt in `app_settings`. Only the photo bytes use a volume, so a
+deployment needs just `DATABASE_URL` + `ICLOUD_ENCRYPTION_SECRET`.
 
 ## Run on Unraid
 

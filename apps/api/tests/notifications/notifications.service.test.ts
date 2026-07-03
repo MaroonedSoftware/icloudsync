@@ -47,7 +47,7 @@ function make(config: Partial<NotificationSettings> = {}, now: Date = new Date('
 describe('NotificationsService', () => {
     it('does not notify when the channel is off', async () => {
         const { notifier, service } = make({ channel: 'none' });
-        await service.notifyReauthRequired('me@icloud.com');
+        await service.notifyReauthRequired('me@icloud.com', 'me@icloud.com');
         expect(notifier.sent).toHaveLength(0);
     });
 
@@ -55,7 +55,7 @@ describe('NotificationsService', () => {
         const now = new Date('2026-07-01T12:00:00Z');
         const { settings, notifier, service } = make({}, now);
 
-        await service.notifyReauthRequired('me@icloud.com');
+        await service.notifyReauthRequired('me@icloud.com', 'me@icloud.com');
 
         expect(notifier.sent).toHaveLength(1);
         expect(notifier.sent[0]).toMatchObject({ kind: 'reauth_required', account: 'me@icloud.com' });
@@ -66,7 +66,7 @@ describe('NotificationsService', () => {
         const { settings, notifier, service } = make({ throttleHours: 24 }, new Date('2026-07-02T00:00:00Z'));
         settings.state.set('me@icloud.com', '2026-07-01T06:00:00Z'); // 18h ago < 24h window
 
-        await service.notifyReauthRequired('me@icloud.com');
+        await service.notifyReauthRequired('me@icloud.com', 'me@icloud.com');
 
         expect(notifier.sent).toHaveLength(0);
         expect(settings.state.get('me@icloud.com')).toBe('2026-07-01T06:00:00Z'); // unchanged
@@ -77,7 +77,7 @@ describe('NotificationsService', () => {
         const { settings, notifier, service } = make({ throttleHours: 24 }, now);
         settings.state.set('me@icloud.com', '2026-07-01T00:00:00Z'); // 48h ago > 24h window
 
-        await service.notifyReauthRequired('me@icloud.com');
+        await service.notifyReauthRequired('me@icloud.com', 'me@icloud.com');
 
         expect(notifier.sent).toHaveLength(1);
         expect(settings.state.get('me@icloud.com')).toBe(now.toISOString());
@@ -87,7 +87,7 @@ describe('NotificationsService', () => {
         const { settings, notifier, service } = make();
         notifier.failWith = new Error('boom');
 
-        await service.notifyReauthRequired('me@icloud.com'); // swallowed + logged
+        await service.notifyReauthRequired('me@icloud.com', 'me@icloud.com'); // swallowed + logged
 
         expect(settings.state.has('me@icloud.com')).toBe(false);
     });

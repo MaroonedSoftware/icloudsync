@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_SYNC_CRON, buildPhotoSyncRegistry } from '../../src/modules/icloud/sync/photo.sync.module.js';
 import { SYNC_PHOTOS_JOB, SyncPhotosJob } from '../../src/modules/icloud/sync/sync.photos.job.js';
 import { SYNC_SWEEP_JOB, SweepPhotosJob } from '../../src/modules/icloud/sync/sync.dispatch.js';
+import { RELOCATE_ARCHIVE_JOB, RelocateArchiveJob } from '../../src/modules/icloud/sync/relocate.archive.job.js';
 
 describe('buildPhotoSyncRegistry', () => {
     it('registers the per-account job on-demand (no cron)', () => {
@@ -23,9 +24,15 @@ describe('buildPhotoSyncRegistry', () => {
         expect(registrations.get(SYNC_SWEEP_JOB)).toEqual({ job: SweepPhotosJob, cron: DEFAULT_SYNC_CRON });
     });
 
-    it('registers exactly the two sync queues', () => {
+    it('registers the archive-relocation job on-demand (no cron)', () => {
         const registrations = buildPhotoSyncRegistry();
 
-        expect([...registrations.keys()].sort()).toEqual([SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB].sort());
+        expect(registrations.get(RELOCATE_ARCHIVE_JOB)).toBe(RelocateArchiveJob);
+    });
+
+    it('registers exactly the three sync queues', () => {
+        const registrations = buildPhotoSyncRegistry();
+
+        expect([...registrations.keys()].sort()).toEqual([SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB, RELOCATE_ARCHIVE_JOB].sort());
     });
 });

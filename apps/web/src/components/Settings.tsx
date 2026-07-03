@@ -1,12 +1,22 @@
 import { useEffect, useState } from 'react';
-import { api, type AppSettings, type NotificationChannel, type NotificationSettings, type PhotoLayout } from '../api.js';
+import { api, type AppSettings, type NotificationChannel, type NotificationSettings, type PhotoLayout, type PhotoNaming } from '../api.js';
 import { scheduleLabel } from '../format.js';
 
-const LAYOUTS: { value: PhotoLayout; label: string }[] = [
-    { value: 'flat', label: 'Flat (by id)' },
+export const LAYOUTS: { value: PhotoLayout; label: string }[] = [
+    { value: 'flat', label: 'Flat (all in one folder)' },
     { value: 'date', label: 'By date (YYYY/YYYY-MM)' },
     { value: 'album', label: 'By album' },
 ];
+
+export const NAMINGS: { value: PhotoNaming; label: string }[] = [
+    { value: 'clean', label: 'Original name (IMG_0001.HEIC)' },
+    { value: 'datetime', label: 'Date-time prefix (20240315-143022_IMG_0001.HEIC)' },
+    { value: 'hash', label: 'Name + id (IMG_0001~a1b2c3.HEIC)' },
+];
+
+/** The human label for a layout/naming value (falls back to the raw value). */
+export const layoutLabel = (v: PhotoLayout): string => LAYOUTS.find(l => l.value === v)?.label ?? v;
+export const namingLabel = (v: PhotoNaming): string => NAMINGS.find(n => n.value === v)?.label ?? v;
 
 const CRON_PRESETS = [
     { value: '0 * * * *', label: 'Hourly' },
@@ -36,9 +46,10 @@ function notificationsPatch(n: NotificationSettings): NotificationSettings {
     return patch;
 }
 
-/** Edit the database-backed settings (photo layout, sync schedule, admin notifications). */
+/** Edit the database-backed settings (photo layout, file naming, sync schedule, admin notifications). */
 export function Settings({ onChange }: { onChange?: () => void }) {
     const [layout, setLayout] = useState<PhotoLayout>('flat');
+    const [naming, setNaming] = useState<PhotoNaming>('clean');
     const [cron, setCron] = useState('0 */6 * * *');
     const [notifications, setNotifications] = useState<NotificationSettings>(DEFAULT_NOTIFICATIONS);
     const [loaded, setLoaded] = useState(false);
@@ -51,6 +62,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
 
     const apply = (s: AppSettings) => {
         setLayout(s.photosLayout);
+        setNaming(s.photosNaming);
         setCron(s.syncCron);
         setNotifications(s.notifications ?? DEFAULT_NOTIFICATIONS);
     };
@@ -81,7 +93,14 @@ export function Settings({ onChange }: { onChange?: () => void }) {
         setSaving(true);
         setError(undefined);
         try {
-            apply(await api.updateSettings({ photosLayout: layout, syncCron: cron, notifications: notificationsPatch(notifications) }));
+            apply(
+                await api.updateSettings({
+                    photosLayout: layout,
+                    photosNaming: naming,
+                    syncCron: cron,
+                    notifications: notificationsPatch(notifications),
+                }),
+            );
             setDirty(false);
             setSaved(true);
             onChange?.();
@@ -115,7 +134,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
 
             {error && <div className="error">{error}</div>}
 
-            <label htmlFor="layout">Photo organization</label>
+            <label htmlFor="layout">Default photo organization</label>
             <select id="layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
                 {LAYOUTS.map(l => (
                     <option key={l.value} value={l.value}>
@@ -123,6 +142,18 @@ export function Settings({ onChange }: { onChange?: () => void }) {
                     </option>
                 ))}
             </select>
+
+            <label htmlFor="naming">Default file naming</label>
+            <select id="naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
+                {NAMINGS.map(n => (
+                    <option key={n.value} value={n.value}>
+                        {n.label}
+                    </option>
+                ))}
+            </select>
+            <p className="muted" style={{ marginTop: -6 }}>
+                Defaults for every account. An account can override these on its own page. Applies to newly synced photos.
+            </p>
 
             <label htmlFor="cron">Sync schedule (cron)</label>
             <input id="cron" type="text" value={cron} disabled={!loaded} spellCheck={false} onChange={e => edit(setCron)(e.target.value)} />

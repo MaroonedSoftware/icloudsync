@@ -1,16 +1,26 @@
 -- migrate:up
 
--- Registry of the iCloud accounts this instance backs up. Each account's photos
--- (icloud_photos) and encrypted session (storage_objects) are keyed by account,
--- so this table just tracks which accounts are known: the sync job loops it to
--- back up every account, and the UI lists/switches between them.
+-- Registry of the iCloud accounts this instance backs up. Each account has an
+-- auto-generated UUID primary key (its stable internal identity, used in URLs,
+-- foreign keys, and storage prefixes); the Apple ID email is a unique attribute,
+-- not the identity. The encrypted session blob lives on the row itself (promoted
+-- out of a generic blob store), so an account's identity, credentials, and
+-- storage config all sit in one place.
 create table icloud_accounts (
-    account_name text        not null primary key,
-    added_at     timestamptz not null default now()
+    id                 uuid        not null default gen_random_uuid() primary key,
+    account_name       text        not null unique,          -- Apple ID email (the iCloud login)
+    added_at           timestamptz not null default now(),
+    session            bytea,                                 -- encrypted AuthSession blob; null until first login
+    session_updated_at timestamptz,                           -- when `session` was last written
+    archive_prefix     text,                                  -- custom photo-archive path prefix; null → use id
+    photos_layout      text,                                  -- custom photo-archive layout; null → use id
+    photos_naming      text,                                  -- custom photo-archive naming; null → use id
+    relocation_error   text,                                  -- last archive-relocation failure summary; null → last move ok or none
+    relocation_from    text                                   -- prefix a failed move should resume from; null → nothing to resume
 );
 
 create table icloud_photos (
-    account_name        text        not null,
+    account_id          uuid        not null references icloud_accounts (id) on delete cascade,
     record_name         text        not null,
     master_record_name  text,
     filename            text,
@@ -25,33 +35,26 @@ create table icloud_photos (
     backup_size         bigint,
     backup_checksum     text,
     backed_up_at        timestamptz,
-    primary key (account_name, record_name)
+    primary key (account_id, record_name)
 );
 
 create index icloud_photos_account_asset_date_idx
-    on icloud_photos (account_name, asset_date desc);
+    on icloud_photos (account_id, asset_date desc);
 
 -- Speeds up "is this backed up?" lookups and backed-up counts/sums.
 create index icloud_photos_account_backed_up_idx
-    on icloud_photos (account_name, backed_up_at);
+    on icloud_photos (account_id, backed_up_at);
 
+-- Global runtime settings plus the Argon2id salt for the session-encryption key
+-- (key `icloud_encryption_salt`, hex-encoded, not secret — kept here so the
+-- key can be reproduced across restarts without a session filesystem).
 create table app_settings (
     key        text        not null primary key,
     value      jsonb       not null,
     updated_at timestamptz not null default now()
 );
 
--- Generic key/bytes object store, used by PostgresStorageProvider to keep the
--- encrypted iCloud session (and its salt) in the database instead of on disk.
-create table storage_objects (
-    key          text        not null primary key,
-    content      bytea       not null,
-    content_type text,
-    updated_at   timestamptz not null default now()
-);
-
 -- migrate:down
-drop table storage_objects;
 
 drop table app_settings;
 

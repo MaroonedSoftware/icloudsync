@@ -11,7 +11,6 @@ import { databaseUrl, loadAppConfig, webRoot, type AppConfigShape } from '../con
 import type { AppConfig } from '@maroonedsoftware/appconfig';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { registerData } from '../data/data.module.js';
-import { PostgresStorageProvider } from '../data/postgres.storage.provider.js';
 import { ICloudConfig } from '../icloud/icloud.config.js';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { registerICloud } from '../icloud/icloud.module.js';
@@ -67,7 +66,7 @@ export interface ApiServerOptions {
     /** Listen port. Defaults to the `http` config section (env `PORT`, else 3000). `0` picks a free port. */
     port?: number;
     config?: ICloudConfig;
-    /** Storage backend for the encrypted session (defaults to Postgres). */
+    /** Storage backend for the archived photo bytes (defaults to local disk under `config.photosDir`). */
     storage?: StorageProvider;
     /** Postgres connection string. Defaults to the `database` config section (env `DATABASE_URL`). */
     connectionString?: string;
@@ -115,8 +114,9 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
     registry.register(AccountsService).useInstance(new AccountsService(db));
-    // The encrypted session + salt live in Postgres by default (no session volume needed).
-    await registerICloud(registry, config, options.storage ?? new PostgresStorageProvider(db));
+    // The encrypted session lives on each account's row and the salt in app_settings
+    // (no session volume needed); `storage`, when given, backs the photo archive.
+    await registerICloud(registry, config, db, options.storage);
     registerPhotoSync(registry); // PhotosRepository + SyncPhotosJob
 
     // Schedule comes from the DB settings (overridable for tests).

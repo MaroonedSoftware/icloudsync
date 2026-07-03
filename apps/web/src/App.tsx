@@ -16,8 +16,8 @@ export function App() {
         const list = await api.accounts();
         setAccounts(list);
         setSelected(prev => {
-            if (prev && list.some(a => a.account === prev)) return prev;
-            return (list.find(a => a.authenticated) ?? list[0])?.account ?? '';
+            if (prev && list.some(a => a.id === prev)) return prev;
+            return (list.find(a => a.authenticated) ?? list[0])?.id ?? '';
         });
         return list;
     }, []);
@@ -28,17 +28,17 @@ export function App() {
 
     // After a successful (re)auth, show that account's dashboard and leave add mode.
     const onAuthenticated = useCallback(
-        async (account: string) => {
+        async (id: string) => {
             await refresh();
-            setSelected(account);
+            setSelected(id);
             setAdding(false);
             setView('dashboard');
         },
         [refresh],
     );
 
-    const openAccount = useCallback((account: string) => {
-        setSelected(account);
+    const openAccount = useCallback((id: string) => {
+        setSelected(id);
         setView('dashboard');
     }, []);
 
@@ -50,7 +50,7 @@ export function App() {
         );
     }
 
-    const current = accounts.find(a => a.account === selected);
+    const current = accounts.find(a => a.id === selected);
     const showAdd = adding || accounts.length === 0;
 
     let body: React.ReactNode;
@@ -61,7 +61,7 @@ export function App() {
     } else if (!current || !current.authenticated) {
         body = <Login account={current?.account ?? ''} lockAccount={!!current} onAuthenticated={onAuthenticated} />;
     } else {
-        body = <Dashboard account={selected} onChanged={refresh} />;
+        body = <Dashboard id={current.id} account={current.account} onChanged={refresh} />;
     }
 
     return (
@@ -81,7 +81,7 @@ export function App() {
                         <>
                             <select className="account-switch" value={selected} onChange={e => setSelected(e.target.value)} aria-label="Account">
                                 {accounts.map(a => (
-                                    <option key={a.account} value={a.account}>
+                                    <option key={a.id} value={a.id}>
                                         {a.account}
                                         {a.authenticated ? '' : ' · signed out'}
                                     </option>
