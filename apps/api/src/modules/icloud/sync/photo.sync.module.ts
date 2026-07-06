@@ -21,7 +21,7 @@ import { SyncRegistry } from './sync.registry.js';
 import { SyncProgressRegistry } from './sync.progress.registry.js';
 import { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 import { SYNC_PHOTOS_JOB, SyncPhotosJob, type SyncPhotosPayload } from './sync.photos.job.js';
-import { SYNC_SWEEP_JOB, SweepPhotosJob } from './sync.dispatch.js';
+import { SYNC_SWEEP_JOB, SweepPhotosJob, reconcileTrackedSyncs, type InFlightSyncJob } from './sync.dispatch.js';
 import { RELOCATE_ARCHIVE_JOB, RelocateArchiveJob } from './relocate.archive.job.js';
 import { RelocateRegistry } from './relocate.registry.js';
 
@@ -82,6 +82,37 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
 }
 
 /**
+ * Durability policy for the per-account {@link SYNC_PHOTOS_JOB} queue, tuned so a
+ * sync survives (and promptly resumes after) a process restart.
+ *
+ * pg-boss can end an `active` job two ways (both re-queue it as a retry while
+ * retries remain, else dead-letter it):
+ * - `expireInSeconds` — an **absolute** cap on how long a job may run, counted
+ *   from when it started. It also bounds the in-process handler, so a healthy but
+ *   slow sync (a large library, or one waiting out iCloud rate limits) is aborted
+ *   mid-run once it elapses. pg-boss defaults this to 15 minutes, which is easily
+ *   exceeded; we raise it so a normal sync runs to completion in one pass.
+ * - `heartbeatSeconds` — an **earlier** failure path that fires only when the
+ *   worker stops sending heartbeats (pg-boss touches the row automatically while
+ *   the handler runs). A live sync keeps heartbeating, so this never trips it; but
+ *   when the process is killed mid-sync, the job is reclaimed within roughly this
+ *   interval instead of waiting out the full `expireInSeconds`. That is what makes
+ *   a sync resume promptly after a restart rather than sitting idle for minutes.
+ *
+ * `retryLimit` is raised well above pg-boss's default of 2 because each restart
+ * (or expiry) consumes one retry: a couple of restarts during a long sync must
+ * not exhaust the budget and strand the job in the dead-letter state.
+ */
+export const SYNC_QUEUE_POLICY = {
+    /** 2h absolute cap — long enough for a full library pass, short enough to reclaim a truly hung worker. */
+    expireInSeconds: 2 * 60 * 60,
+    /** Reclaim a killed worker's job within ~a minute (must be >= 10). */
+    heartbeatSeconds: 60,
+    /** Tolerate many restart/expiry cycles before dead-lettering (default is 2). */
+    retryLimit: 10,
+} as const;
+
+/**
  * Build the pg-boss registry map: the per-account {@link SyncPhotosJob} is
  * on-demand (enqueued by the API and by the sweep), while the
  * {@link SweepPhotosJob} runs on the cron schedule and fans out one per-account
@@ -106,6 +137,15 @@ export interface SyncEngine {
     broker: PgBossJobBroker;
     /** Start consuming the queue (registers workers + cron). Call after the DI container is built. */
     startConsumer(container: Container): Promise<void>;
+    /**
+     * Re-track any sync that was still queued or running when this process last
+     * stopped. pg-boss holds (and resumes) those jobs, but the in-memory
+     * {@link SyncRegistry} the API reads is wiped by a restart; this repopulates
+     * it from the durable queue so `/stats` reports the running sync and cancel
+     * can still reach it. Best-effort — call after a restart. Returns the number
+     * of accounts re-tracked.
+     */
+    reconcileInFlight(registry: SyncRegistry): Promise<number>;
     /** Stop the consumer (if started) and the pg-boss connection. */
     stop(): Promise<void>;
 }
@@ -125,6 +165,10 @@ export async function startSyncEngine(connectionString: string, logger: Logger, 
     for (const queue of [SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB, RELOCATE_ARCHIVE_JOB]) {
         if (!(await pgboss.getQueue(queue))) await pgboss.createQueue(queue);
     }
+    // Apply the sync queue's durability policy on every boot (not just at creation),
+    // so deployments whose queue predates this policy pick it up too. updateQueue is
+    // idempotent; a live sync keeps running while its queue's settings are updated.
+    await pgboss.updateQueue(SYNC_PHOTOS_JOB, { ...SYNC_QUEUE_POLICY });
     const broker = new PgBossJobBroker(registrations, pgboss, new PgBossConnectionProvider());
     let runner: PgBossJobRunner | undefined;
 
@@ -133,6 +177,12 @@ export async function startSyncEngine(connectionString: string, logger: Logger, 
         startConsumer: async (container: Container) => {
             runner = new PgBossJobRunner(container, registrations, pgboss, logger);
             await runner.start(); // creates queues, schedules the cron, starts workers
+        },
+        reconcileInFlight: async (registry: SyncRegistry) => {
+            // findJobs returns every retained job on the queue (including terminal
+            // ones); reconcileTrackedSyncs keeps only the in-flight ones per account.
+            const jobs = (await pgboss.findJobs(SYNC_PHOTOS_JOB)) as InFlightSyncJob[];
+            return reconcileTrackedSyncs(registry, jobs);
         },
         stop: () => (runner ? runner.stop() : pgboss.stop()), // runner.stop() also stops pg-boss
     };

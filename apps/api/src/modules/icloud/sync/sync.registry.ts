@@ -9,8 +9,11 @@
  * running" flag are resolved by asking the broker about the tracked id
  * (`getJob`/`cancel`), so a stale entry for a job that has since finished is
  * harmless (the broker reports it terminal). This only needs to remember ids,
- * which is why nothing is persisted: a process restart drops any in-flight run
- * anyway, so there is nothing left to cancel.
+ * which is why nothing is persisted here. A process restart empties this map, but
+ * pg-boss keeps (and resumes) any in-flight job, so the ids are re-tracked from
+ * the durable queue on boot (see {@link reconcileTrackedSyncs}) — otherwise the
+ * dashboard would report no sync running, and cancel would find nothing, while a
+ * resumed sync is still going.
  */
 export class SyncRegistry {
     /** account → id of the last job enqueued for it. */

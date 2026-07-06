@@ -1,5 +1,6 @@
 import { Job, JobBroker } from '@maroonedsoftware/jobbroker';
 import { Duration } from 'luxon';
+import { IN_FLIGHT_STATES } from './job.status.js';
 import { SYNC_PHOTOS_JOB, type SyncPhotosPayload } from './sync.photos.job.js';
 import { SyncRegistry } from './sync.registry.js';
 
@@ -38,6 +39,55 @@ export async function enqueueSync(
     const jobId = await broker.send(SYNC_PHOTOS_JOB, { ...options, accountId }, startAfter ? { startAfter } : undefined);
     registry.track(accountId, jobId);
     return jobId;
+}
+
+/**
+ * A queued-or-running sync job as {@link reconcileTrackedSyncs} reads it: the
+ * `id`, its lifecycle `state`, when it was enqueued, and enough of the payload to
+ * recover the account it belongs to. A structural subset of pg-boss's
+ * `JobWithMetadata`, so `pgboss.findJobs(SYNC_PHOTOS_JOB)` rows satisfy it directly.
+ */
+export interface InFlightSyncJob {
+    id: string;
+    /** pg-boss lifecycle state (`created`/`active`/`retry`/`completed`/…). */
+    state: string;
+    /** When the job was enqueued; used to keep the newest job when an account has several. */
+    createdOn?: Date | string | null;
+    /** The enqueued payload; its `accountId` is what the job is re-tracked under. */
+    data?: { accountId?: string } | null;
+}
+
+/** Milliseconds since epoch for a job's `createdOn`, or 0 when it is missing/unparseable (sorts oldest). */
+function createdAt(value: Date | string | null | undefined): number {
+    if (!value) return 0;
+    const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+    return Number.isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * Repopulate the in-memory {@link SyncRegistry} from the durable queue after a
+ * restart. pg-boss keeps each per-account sync job (and resumes it), but the
+ * registry the API reads to answer "is a sync running" and to cancel it is
+ * in-memory, so a restart forgets every in-flight run — the dashboard then
+ * reports `running: false` and cancel finds nothing even while a sync is still
+ * going. Given the queue's jobs (e.g. from `pgboss.findJobs`), re-track the most
+ * recently enqueued still-queued-or-running one per account; terminal jobs
+ * (`completed`/`failed`/`cancelled`) and jobs with no account are ignored.
+ * Returns the number of accounts re-tracked.
+ */
+export function reconcileTrackedSyncs(registry: SyncRegistry, jobs: InFlightSyncJob[]): number {
+    // Newest first, so the first in-flight job seen for an account is the one kept
+    // (an account can briefly have several, e.g. a sweep enqueued over a running one).
+    const newestFirst = [...jobs].sort((a, b) => createdAt(b.createdOn) - createdAt(a.createdOn));
+    const tracked = new Set<string>();
+    for (const job of newestFirst) {
+        if (!IN_FLIGHT_STATES.has(job.state)) continue;
+        const accountId = job.data?.accountId;
+        if (!accountId || tracked.has(accountId)) continue;
+        registry.track(accountId, job.id);
+        tracked.add(accountId);
+    }
+    return tracked.size;
 }
 
 /**

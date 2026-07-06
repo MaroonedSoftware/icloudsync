@@ -3,7 +3,7 @@ import type { Duration } from 'luxon';
 import { describe, expect, it } from 'vitest';
 import { SyncRegistry } from '../../src/modules/icloud/sync/sync.registry.js';
 import { SYNC_PHOTOS_JOB } from '../../src/modules/icloud/sync/sync.photos.job.js';
-import { SweepPhotosJob, dispatchSync, enqueueSync } from '../../src/modules/icloud/sync/sync.dispatch.js';
+import { SweepPhotosJob, dispatchSync, enqueueSync, reconcileTrackedSyncs, type InFlightSyncJob } from '../../src/modules/icloud/sync/sync.dispatch.js';
 
 interface SendOptions {
     startAfter?: Duration;
@@ -72,6 +72,59 @@ describe('dispatchSync', () => {
         // First account runs immediately; the second is deferred (15s stagger).
         expect(broker.sent[0]!.options).toBeUndefined();
         expect(broker.sent[1]!.options?.startAfter?.as('seconds')).toBe(15);
+    });
+});
+
+describe('reconcileTrackedSyncs', () => {
+    const job = (over: Partial<InFlightSyncJob>): InFlightSyncJob => ({ id: 'j', state: 'active', data: { accountId: ID_A }, ...over });
+
+    it('re-tracks a queued-or-running job per account and reports the count', () => {
+        const registry = new SyncRegistry();
+
+        const count = reconcileTrackedSyncs(registry, [
+            job({ id: 'job-a', state: 'active', data: { accountId: ID_A } }),
+            job({ id: 'job-b', state: 'created', data: { accountId: ID_B } }),
+        ]);
+
+        expect(count).toBe(2);
+        expect(registry.jobId(ID_A)).toBe('job-a');
+        expect(registry.jobId(ID_B)).toBe('job-b');
+    });
+
+    it('ignores terminal jobs and jobs with no account', () => {
+        const registry = new SyncRegistry();
+
+        const count = reconcileTrackedSyncs(registry, [
+            job({ id: 'done', state: 'completed', data: { accountId: ID_A } }),
+            job({ id: 'gone', state: 'cancelled', data: { accountId: ID_A } }),
+            job({ id: 'dead', state: 'failed', data: { accountId: ID_A } }),
+            job({ id: 'orphan', state: 'active', data: {} }),
+            job({ id: 'nodata', state: 'active', data: null }),
+        ]);
+
+        expect(count).toBe(0);
+        expect(registry.jobId(ID_A)).toBeUndefined();
+        expect(registry.accounts()).toEqual([]);
+    });
+
+    it('keeps the most recently enqueued job when an account has several in flight', () => {
+        const registry = new SyncRegistry();
+
+        // Deliberately unsorted; the newer createdOn must win regardless of order.
+        reconcileTrackedSyncs(registry, [
+            job({ id: 'older', state: 'active', createdOn: '2026-07-06T10:00:00.000Z', data: { accountId: ID_A } }),
+            job({ id: 'newer', state: 'created', createdOn: '2026-07-06T12:00:00.000Z', data: { accountId: ID_A } }),
+        ]);
+
+        expect(registry.jobId(ID_A)).toBe('newer');
+    });
+
+    it('treats the retry state as in-flight', () => {
+        const registry = new SyncRegistry();
+
+        reconcileTrackedSyncs(registry, [job({ id: 'retrying', state: 'retry', data: { accountId: ID_A } })]);
+
+        expect(registry.jobId(ID_A)).toBe('retrying');
     });
 });
 

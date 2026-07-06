@@ -15,6 +15,7 @@ import { ICloudConfig } from '../icloud/icloud.config.js';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { registerICloud } from '../icloud/icloud.module.js';
 import { registerPhotoSync, startSyncEngine, type SyncEngine } from '../icloud/sync/photo.sync.module.js';
+import { SyncRegistry } from '../icloud/sync/sync.registry.js';
 import { ImmichProbe } from '../icloud/storage/immich.probe.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { registerBodyParser } from './body.parser.js';
@@ -131,6 +132,17 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
 
     const container = registry.build();
     await sync.startConsumer(container);
+
+    // pg-boss still holds (and resumes) any sync that was mid-flight when this
+    // process last stopped, but the in-memory SyncRegistry the API reads to report
+    // and cancel a run was wiped by the restart. Re-track those jobs so /stats
+    // shows the running sync and cancel can still reach it.
+    try {
+        const reattached = await sync.reconcileInFlight(container.get(SyncRegistry));
+        if (reattached > 0) logger.info(`re-attached to ${reattached} in-flight sync${reattached === 1 ? '' : 's'} after restart`);
+    } catch (error) {
+        logger.warn('reconciling in-flight syncs on boot failed', error);
+    }
 
     // Load every registered account's session up front so /icloud/accounts
     // reflects auth state immediately after a restart (not only after a sync).

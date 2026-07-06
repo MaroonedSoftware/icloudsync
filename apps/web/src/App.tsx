@@ -6,9 +6,21 @@ import { Login } from './components/Login.js';
 
 type View = 'dashboard' | 'admin';
 
+// Remember the last account the user viewed so a reload or a later visit
+// reopens it instead of falling back to the first account.
+const LAST_ACCOUNT_KEY = 'icloudsync.lastAccount';
+const readLastAccount = () => {
+    try {
+        return localStorage.getItem(LAST_ACCOUNT_KEY) ?? '';
+    } catch {
+        return '';
+    }
+};
+
+/** Root app shell: loads accounts, remembers the last-viewed one, and switches between the dashboard, the admin view, and login/add-account. */
 export function App() {
     const [accounts, setAccounts] = useState<AccountStatus[]>();
-    const [selected, setSelected] = useState('');
+    const [selected, setSelected] = useState(readLastAccount);
     const [adding, setAdding] = useState(false);
     const [view, setView] = useState<View>('dashboard');
 
@@ -21,6 +33,15 @@ export function App() {
         });
         return list;
     }, []);
+
+    // Persist the current selection so it survives a full page reload.
+    useEffect(() => {
+        try {
+            if (selected) localStorage.setItem(LAST_ACCOUNT_KEY, selected);
+        } catch {
+            // Ignore storage failures (private mode, quota); selection just won't persist.
+        }
+    }, [selected]);
 
     useEffect(() => {
         void refresh();
