@@ -1,0 +1,31 @@
+# Dev stack: Postgres only. Run the API + worker + web on the host with
+# `pnpm dev` and point them at this database. Nothing else runs in Docker, so
+# you keep live reload and can attach a debugger.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   export DATABASE_URL='postgres://postgres:postgres@localhost:5432/icloudsync?sslmode=disable'
+#   pnpm --filter @maroonedsoftware/icloudsync-api migrate:up   # first run only
+#   pnpm dev
+#
+# The port is published to the host so host processes (and dbmate) can reach it.
+# Data lives in a dedicated volume, separate from the production compose stack.
+services:
+    postgres:
+        image: postgres:17-alpine
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: icloudsync
+        ports:
+            - '5432:5432'
+        volumes:
+            - pgdata_dev:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d icloudsync']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+volumes:
+    pgdata_dev:

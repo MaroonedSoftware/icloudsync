@@ -1,8 +1,6 @@
 import { Kysely, sql } from 'kysely';
 import { DEFAULT_SYNC_CRON } from '../icloud/sync/sync.defaults.js';
-import { PHOTO_LAYOUTS, type PhotoLayout } from '../icloud/storage/photo.layout.js';
-import { PHOTO_NAMINGS, type PhotoNaming } from '../icloud/storage/photo.naming.js';
-import { destinationSettingSchema, type DestinationSetting } from '../icloud/storage/photo.destination.js';
+import { immichSettingsSchema, type ImmichSettings } from '../icloud/storage/photo.destination.js';
 import {
     DEFAULT_NOTIFICATION_SETTINGS,
     notificationSettingsSchema,
@@ -13,32 +11,22 @@ import type { DB, Json } from '../data/kysely.js';
 
 /** Setting keys persisted in `app_settings`. */
 const KEY = {
-    photosLayout: 'photos_layout',
-    photosNaming: 'photos_naming',
-    destination: 'photos_destination',
+    immich: 'immich',
     syncCron: 'sync_cron',
     notifications: 'notifications',
     /** Runtime throttle state: `{ [account]: lastNotifiedIso }`. Not part of {@link AppSettingsValues}. */
     reauthNotifyState: 'reauth_notify_state',
 } as const;
 
-/**
- * Default destination for a fresh install (and the value a pre-destination
- * install resolves to): the filesystem archive in `custom` mode, so whatever
- * `photos_layout` / `photos_naming` were already configured are honored verbatim
- * and nothing about existing backups changes. The UI nudges toward the `immich`
- * preset from here.
- */
-export const DEFAULT_DESTINATION: DestinationSetting = { kind: 'filesystem', preset: 'custom' };
-
 /** The user-facing settings, with defaults applied. */
 export interface AppSettingsValues {
-    /** Where photos are backed up, and how they're organized once there. */
-    destination: DestinationSetting;
-    /** On-disk photo organization (which folders assets are filed under). Used by the `custom` filesystem preset. */
-    photosLayout: PhotoLayout;
-    /** How archived photo filenames are composed within their layout folder. Used by the `custom` filesystem preset. */
-    photosNaming: PhotoNaming;
+    /**
+     * The global Immich connection (server URL, API key, reconcile flags) shared
+     * by every account that routes to Immich, or `null` when none is configured.
+     * *Where* each account's photos go is a per-account choice (see
+     * `AccountsService`), not part of this global config.
+     */
+    immich: ImmichSettings | null;
     /** Sync schedule (cron). */
     syncCron: string;
     /** Admin notification config (channel, throttle, webhook/SMTP details). */
@@ -49,10 +37,10 @@ export interface AppSettingsValues {
  * Runtime, user-editable configuration, persisted in Postgres (`app_settings`)
  * rather than the environment. Each setting is a `(key, jsonb value)` row;
  * unset keys fall back to a built-in default. This is the source of truth for
- * the backup destination, photo layout, and sync schedule (all global across
- * accounts) — the set of
- * accounts lives in `icloud_accounts` (see `AccountsService`), and secrets and
- * infra (DB URL, encryption secret, ports, storage paths) stay in env.
+ * the global Immich connection and the sync schedule — the per-account backup
+ * destination and on-disk photo layout/naming are per-account (see
+ * `AccountsService`), the set of accounts lives in `icloud_accounts`, and secrets
+ * and infra (DB URL, encryption secret, ports, storage paths) stay in env.
  */
 export class SettingsService {
     constructor(private readonly db: Kysely<DB>) {}
@@ -71,40 +59,30 @@ export class SettingsService {
             .execute();
     }
 
-    /** The on-disk photo layout (default `flat`). */
-    async photosLayout(): Promise<PhotoLayout> {
-        const value = await this.read<string>(KEY.photosLayout);
-        return value && (PHOTO_LAYOUTS as readonly string[]).includes(value) ? (value as PhotoLayout) : 'flat';
-    }
-    setPhotosLayout(layout: PhotoLayout): Promise<void> {
-        return this.write(KEY.photosLayout, layout);
-    }
-
-    /** The archived-filename scheme (default `clean`). */
-    async photosNaming(): Promise<PhotoNaming> {
-        const value = await this.read<string>(KEY.photosNaming);
-        return value && (PHOTO_NAMINGS as readonly string[]).includes(value) ? (value as PhotoNaming) : 'clean';
-    }
-    setPhotosNaming(naming: PhotoNaming): Promise<void> {
-        return this.write(KEY.photosNaming, naming);
+    /**
+     * The global Immich connection, or `null` when none is configured (or a stored
+     * value fails to validate, e.g. after a schema change). Accounts that route to
+     * Immich upload here; a `null` connection means those accounts are skipped at
+     * sync time until one is set.
+     */
+    async immich(): Promise<ImmichSettings | null> {
+        const stored = await this.read<unknown>(KEY.immich);
+        if (stored == null) return null;
+        const parsed = immichSettingsSchema.safeParse(stored);
+        return parsed.success ? parsed.data : null;
     }
 
     /**
-     * The backup destination config, with defaults applied. Falls back to
-     * {@link DEFAULT_DESTINATION} when unset or when a stored value fails to
-     * validate (e.g. a schema change), so the job always has a usable value.
+     * Validate and persist the global Immich connection (returning the stored
+     * value), or clear it when passed `null` (returning `null`).
      */
-    async destination(): Promise<DestinationSetting> {
-        const stored = await this.read<unknown>(KEY.destination);
-        if (stored === undefined) return DEFAULT_DESTINATION;
-        const parsed = destinationSettingSchema.safeParse(stored);
-        return parsed.success ? parsed.data : DEFAULT_DESTINATION;
-    }
-
-    /** Validate and persist the backup destination config, returning the stored value. */
-    async setDestination(patch: DestinationSetting): Promise<DestinationSetting> {
-        const value = destinationSettingSchema.parse(patch);
-        await this.write(KEY.destination, value);
+    async setImmich(patch: ImmichSettings | null): Promise<ImmichSettings | null> {
+        if (patch === null) {
+            await this.write(KEY.immich, null);
+            return null;
+        }
+        const value = immichSettingsSchema.parse(patch);
+        await this.write(KEY.immich, value);
         return value;
     }
 
@@ -160,13 +138,7 @@ export class SettingsService {
 
     /** All user-facing settings at once, with defaults applied. */
     async all(): Promise<AppSettingsValues> {
-        const [destination, photosLayout, photosNaming, syncCron, notifications] = await Promise.all([
-            this.destination(),
-            this.photosLayout(),
-            this.photosNaming(),
-            this.syncCron(),
-            this.notifications(),
-        ]);
-        return { destination, photosLayout, photosNaming, syncCron, notifications };
+        const [immich, syncCron, notifications] = await Promise.all([this.immich(), this.syncCron(), this.notifications()]);
+        return { immich, syncCron, notifications };
     }
 }

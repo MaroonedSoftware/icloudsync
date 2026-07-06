@@ -1,17 +1,22 @@
 import { Kysely } from 'kysely';
 import type { DB } from '../data/kysely.js';
+import type { DestinationKind, FilesystemPreset } from '../icloud/storage/photo.destination.js';
 import type { PhotoLayout } from '../icloud/storage/photo.layout.js';
 import type { PhotoNaming } from '../icloud/storage/photo.naming.js';
 
 /**
- * An account's on-disk organization overrides. Each field is `null` when the
- * account inherits the global default (the `photos_layout` / `photos_naming`
- * settings) rather than pinning its own.
+ * An account's backup-destination choice and on-disk organization overrides. Each
+ * field is `null` when the account falls back to the built-in default
+ * (`filesystem` / `immich` preset / `flat` / `clean`) rather than pinning its own.
  */
 export interface AccountPhotoSettings {
-    /** Layout override, or `null` to inherit the global default. */
+    /** Destination kind override (`filesystem` archive vs `immich` upload), or `null` to use the built-in default. */
+    destination: DestinationKind | null;
+    /** Filesystem preset override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
+    preset: FilesystemPreset | null;
+    /** Layout override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
     layout: PhotoLayout | null;
-    /** Naming override, or `null` to inherit the global default. */
+    /** Naming override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
     naming: PhotoNaming | null;
 }
 
@@ -28,7 +33,7 @@ export interface Account {
     id: string;
     /** Apple ID email (the iCloud login); unique across accounts. */
     accountName: string;
-    /** Custom photo-archive path prefix, or `null` to use the account id. */
+    /** Custom photo-archive path prefix, or `null` to default to the Apple ID's local part. */
     archivePrefix: string | null;
     /** Summary of the last archive-relocation failure, or `null` if the last move succeeded (or none ran). */
     relocationError: string | null;
@@ -45,9 +50,9 @@ export interface Account {
  * ({@link remove}, which cascades to its photos and session). Accounts are keyed
  * by their UUID {@link Account.id}; the Apple ID email is a unique attribute.
  *
- * Each account may also override the global on-disk organization
- * ({@link photoSettings} / {@link setPhotoSettings}); an unset override inherits
- * the global default.
+ * Each account may also set its own on-disk organization
+ * ({@link photoSettings} / {@link setPhotoSettings}); an unset override falls back
+ * to the built-in default.
  */
 export class AccountsService {
     constructor(private readonly db: Kysely<DB>) {}
@@ -103,16 +108,18 @@ export class AccountsService {
     }
 
     /**
-     * An account's layout/naming overrides. Each field is `null` when the account
-     * inherits the global default; an unknown account also reads as all-null.
+     * An account's destination + layout/naming overrides. Each field is `null` when
+     * the account uses the built-in default; an unknown account also reads as all-null.
      */
     async photoSettings(id: string): Promise<AccountPhotoSettings> {
         const row = await this.db
             .selectFrom('icloudAccounts')
-            .select(['photosLayout', 'photosNaming'])
+            .select(['photosDestination', 'photosPreset', 'photosLayout', 'photosNaming'])
             .where('id', '=', id)
             .executeTakeFirst();
         return {
+            destination: (row?.photosDestination ?? null) as DestinationKind | null,
+            preset: (row?.photosPreset ?? null) as FilesystemPreset | null,
             layout: (row?.photosLayout ?? null) as PhotoLayout | null,
             naming: (row?.photosNaming ?? null) as PhotoNaming | null,
         };
@@ -124,7 +131,9 @@ export class AccountsService {
      * no-op when `patch` is empty.
      */
     async setPhotoSettings(id: string, patch: Partial<AccountPhotoSettings>): Promise<void> {
-        const set: { photosLayout?: string | null; photosNaming?: string | null } = {};
+        const set: { photosDestination?: string | null; photosPreset?: string | null; photosLayout?: string | null; photosNaming?: string | null } = {};
+        if ('destination' in patch) set.photosDestination = patch.destination ?? null;
+        if ('preset' in patch) set.photosPreset = patch.preset ?? null;
         if ('layout' in patch) set.photosLayout = patch.layout ?? null;
         if ('naming' in patch) set.photosNaming = patch.naming ?? null;
         if (Object.keys(set).length === 0) return;
@@ -133,7 +142,7 @@ export class AccountsService {
 
     /**
      * Set (or clear) an account's custom photo-archive path prefix. Pass `null`
-     * to clear it back to the default (the account id is used as the prefix).
+     * to clear it back to the default (the Apple ID's local part is used as the prefix).
      */
     async setArchivePrefix(id: string, archivePrefix: string | null): Promise<void> {
         await this.db.updateTable('icloudAccounts').set({ archivePrefix }).where('id', '=', id).execute();

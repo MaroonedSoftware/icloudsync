@@ -71,4 +71,26 @@ describe('ImmichClient', () => {
         const client = new ImmichClient('https://immich.test', 'bad', 'dev', fetch);
         await expect(client.upload({ deviceAssetId: 'r', filename: 'f', bytes, isFavorite: false })).rejects.toBeInstanceOf(ImmichError);
     });
+
+    describe('verify', () => {
+        it('resolves when the server pings and the API key is accepted', async () => {
+            const { fetch, calls } = stubFetch(url => (url.endsWith('/server/ping') ? { body: { res: 'pong' } } : { body: { id: 'user-1' } }));
+            await new ImmichClient('https://immich.test', 'k', 'dev', fetch).verify();
+            expect(calls.map(c => c.url)).toEqual(['https://immich.test/api/server/ping', 'https://immich.test/api/users/me']);
+            expect((calls[1]!.init?.headers as Record<string, string>)['x-api-key']).toBe('k');
+        });
+
+        it('throws (URL) when the server does not answer the ping', async () => {
+            const { fetch } = stubFetch(() => ({ status: 404, body: {} }));
+            await expect(new ImmichClient('https://immich.test', 'k', 'dev', fetch).verify()).rejects.toMatchObject({ message: expect.stringContaining('URL') });
+        });
+
+        it('throws (key rejected) when /users/me returns 401', async () => {
+            const { fetch } = stubFetch(url => (url.endsWith('/server/ping') ? { body: { res: 'pong' } } : { status: 401, body: {} }));
+            await expect(new ImmichClient('https://immich.test', 'bad', 'dev', fetch).verify()).rejects.toMatchObject({
+                status: 401,
+                message: expect.stringContaining('key'),
+            });
+        });
+    });
 });

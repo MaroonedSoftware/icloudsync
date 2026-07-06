@@ -8,31 +8,44 @@ import { PHOTO_NAMINGS, type PhotoNaming } from './photo.naming.js';
  * layout/naming dropdowns: the user picks a *destination* (and, for the
  * filesystem, a *preset*), and the low-level mechanics are derived from it.
  *
+ * The choice is made *per account* (see `AccountsService.photoSettings`): one
+ * account can archive to the filesystem while another uploads to Immich. The
+ * Immich *connection* it uploads to (server URL + API key) is global, configured
+ * once in settings ({@link ImmichSettings}) rather than repeated on every account.
+ *
  * - `filesystem` writes the original bytes to the {@link PhotoArchive}
  *   ({@link StorageProvider}), organized per the chosen {@link FilesystemPreset}.
- * - `immich` uploads each asset straight into an Immich server via its API, so
- *   Immich owns storage entirely (no layout/naming applies).
+ * - `immich` uploads each asset straight into the globally-configured Immich
+ *   server via its API, so Immich owns storage entirely (no layout/naming applies).
  */
 export type DestinationKind = 'filesystem' | 'immich';
 
+/** All valid per-account destination kinds (for config validation). */
+export const DESTINATION_KINDS = ['filesystem', 'immich'] as const;
+
+/** The destination kind an account falls back to when it has not pinned its own. */
+export const DEFAULT_DESTINATION_KIND: DestinationKind = 'filesystem';
+
+/** The filesystem preset an account falls back to when it has not pinned its own. */
+export const DEFAULT_FILESYSTEM_PRESET: FilesystemPreset = 'immich';
+
 /**
- * A filesystem organization preset. Rather than exposing `layout × naming = 9`
- * combinations, three intent-named presets cover the real cases:
+ * A filesystem organization preset — the per-account *baseline* for how photos
+ * are filed. Two intent-named presets cover the common cases; either one's layout
+ * and naming can be further overridden per account (see
+ * `AccountsService.photoSettings`), while the XMP-sidecar behavior always follows
+ * the preset.
  *
  * - `immich` (default) → flat, original filenames, plus an XMP sidecar per asset
  *   carrying capture date, favorite rating, and album membership. Optimized for
  *   an Immich external library mounted read-only over the archive.
  * - `browsable` → a `YYYY/YYYY-MM` date tree with original filenames, for a human
  *   browsing the raw files directly.
- * - `custom` → the advanced escape hatch: the raw {@link PhotoLayout} /
- *   {@link PhotoNaming} knobs, for people who organize the archive their own way.
- *   This is also where pre-existing installs land (their configured layout/naming
- *   are honored verbatim).
  */
-export type FilesystemPreset = 'immich' | 'browsable' | 'custom';
+export type FilesystemPreset = 'immich' | 'browsable';
 
 /** All valid filesystem presets (for config validation). */
-export const FILESYSTEM_PRESETS = ['immich', 'browsable', 'custom'] as const;
+export const FILESYSTEM_PRESETS = ['immich', 'browsable'] as const;
 
 /** The resolved on-disk mechanics a filesystem preset compiles down to. */
 export interface FilesystemMechanics {
@@ -48,7 +61,11 @@ export interface FilesystemDestination extends FilesystemMechanics {
     preset: FilesystemPreset;
 }
 
-/** A resolved Immich destination: the server to upload into and what to reconcile there. */
+/**
+ * A resolved Immich destination: the server to upload into and what to reconcile
+ * there. Its fields come straight from the global {@link ImmichSettings} — the
+ * account only chooses to *route* here, it does not carry its own connection.
+ */
 export interface ImmichDestination {
     kind: 'immich';
     /** Base URL of the Immich server, e.g. `https://immich.example.com`. */
@@ -65,26 +82,23 @@ export interface ImmichDestination {
 export type Destination = FilesystemDestination | ImmichDestination;
 
 /**
- * Fixed preset → mechanics. `custom` is intentionally absent: it resolves from
- * the stored `photos_layout` / `photos_naming` settings, which the caller passes
- * to {@link filesystemDestination}.
+ * Preset → baseline mechanics. The `layout`/`naming` here are the *defaults* a
+ * preset files under; an account may override them ({@link filesystemDestination}
+ * takes the resolved values). `sidecars` always follows the preset.
  */
-export const PRESET_MECHANICS: Record<Exclude<FilesystemPreset, 'custom'>, FilesystemMechanics> = {
+export const PRESET_MECHANICS: Record<FilesystemPreset, FilesystemMechanics> = {
     immich: { layout: 'flat', naming: 'clean', sidecars: true },
     browsable: { layout: 'date', naming: 'clean', sidecars: false },
 };
 
 /**
- * Compile a filesystem preset into a concrete destination. For a fixed preset the
- * mechanics come from {@link PRESET_MECHANICS}; for `custom` they come from the
- * caller's stored layout/naming (sidecars off — the browsable/custom archives are
- * for direct human browsing, not an Immich mount).
+ * Compile a filesystem preset plus the effective (possibly per-account) layout
+ * and naming into a concrete destination. The layout/naming are taken as given —
+ * the caller resolves per-account overrides against the preset baseline — and
+ * only the XMP-sidecar behavior is dictated by the preset.
  */
-export function filesystemDestination(preset: FilesystemPreset, custom: { layout: PhotoLayout; naming: PhotoNaming }): FilesystemDestination {
-    if (preset === 'custom') {
-        return { kind: 'filesystem', preset, layout: custom.layout, naming: custom.naming, sidecars: false };
-    }
-    return { kind: 'filesystem', preset, ...PRESET_MECHANICS[preset] };
+export function filesystemDestination(preset: FilesystemPreset, mechanics: { layout: PhotoLayout; naming: PhotoNaming }): FilesystemDestination {
+    return { kind: 'filesystem', preset, layout: mechanics.layout, naming: mechanics.naming, sidecars: PRESET_MECHANICS[preset].sidecars };
 }
 
 /** Whether a resolved destination needs iCloud album membership resolved up front (for grouping, sidecars, or Immich albums). */
@@ -94,29 +108,29 @@ export function destinationNeedsAlbums(dest: Destination): boolean {
 }
 
 /**
- * The persisted destination config (an `app_settings` row). Filesystem stores
- * only the preset (layout/naming for `custom` live in their own legacy settings,
- * kept for backward compatibility); Immich stores its full connection config.
+ * The global Immich *connection* (an `app_settings` row). This is configured once
+ * and shared by every account that routes to Immich — the server to upload into,
+ * the API key, and the two reconcile behaviors. Which accounts actually use it is
+ * a per-account choice (see {@link DestinationKind}); an account set to `immich`
+ * with no connection configured here is skipped at sync time.
  */
-export const destinationSettingSchema = z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('filesystem'), preset: z.enum(FILESYSTEM_PRESETS) }),
-    z.object({
-        kind: z.literal('immich'),
-        baseUrl: z.string().trim().url(),
-        apiKey: z.string().trim().min(1),
-        recreateAlbums: z.boolean().default(true),
-        syncFavorites: z.boolean().default(true),
-    }),
-]);
+export const immichSettingsSchema = z.object({
+    baseUrl: z.string().trim().url(),
+    apiKey: z.string().trim().min(1),
+    recreateAlbums: z.boolean().default(true),
+    syncFavorites: z.boolean().default(true),
+});
 
-/** The shape stored in `app_settings` under the destination key. */
-export type DestinationSetting = z.infer<typeof destinationSettingSchema>;
+/** The shape stored in `app_settings` under the Immich-connection key. */
+export type ImmichSettings = z.infer<typeof immichSettingsSchema>;
 
 /**
- * The patch a client may PATCH to change the destination. Same shape as the
- * stored value; the service resolves it into a {@link Destination} for the job.
+ * Resolve the global Immich connection into a full {@link ImmichDestination} for
+ * the sync job. The account contributes only the decision to route here.
  */
-export const destinationPatchSchema = destinationSettingSchema;
+export function immichDestination(settings: ImmichSettings): ImmichDestination {
+    return { kind: 'immich', ...settings };
+}
 
 /** Re-exported so callers validating the raw knobs don't need two imports. */
 export { PHOTO_LAYOUTS, PHOTO_NAMINGS };

@@ -4,7 +4,9 @@ import type { Logger } from '@maroonedsoftware/logger';
 import { describe, expect, it } from 'vitest';
 import type { PhotoArchive } from '../../src/modules/icloud/storage/photo.archive.js';
 import type { PhotoLayout } from '../../src/modules/icloud/storage/photo.layout.js';
+import type { DestinationKind, FilesystemPreset } from '../../src/modules/icloud/storage/photo.destination.js';
 import { SyncPhotosJob, type AccountSource, type PhotoSyncSource } from '../../src/modules/icloud/sync/sync.photos.job.js';
+import { SyncProgressRegistry } from '../../src/modules/icloud/sync/sync.progress.registry.js';
 import type { BackedUpAsset, BackupRecord, PhotoStore } from '../../src/modules/icloud/sync/photos.repository.js';
 import { shortHash, type PhotoNaming } from '../../src/modules/icloud/storage/photo.naming.js';
 import type { SettingsService } from '../../src/modules/settings/settings.service.js';
@@ -56,7 +58,11 @@ function photosWith(count: number, albums: AlbumFixture[] = []): PhotosService {
     const requester: ICloudRequester = {
         serviceUrl: () => 'https://p01-ckdatabasews.icloud.com:443',
         async request<T>(_u: string, _p: string, init?: RequestInit & { json?: unknown }): Promise<HttpResponse<T>> {
-            const body = init?.json as QueryBody;
+            const body = init?.json as QueryBody & { batch?: unknown };
+            // getCount() queries the batch count endpoint; report the library size (= count).
+            if (body.batch) {
+                return ok({ batch: [{ records: [{ fields: { itemCount: { value: count } } }] }] }) as HttpResponse<T>;
+            }
             const { recordType, filterBy } = body.query;
 
             if (recordType === 'CPLAlbumByPositionLive') {
@@ -121,7 +127,7 @@ class FakeStore implements PhotoStore {
     }
     async markBackedUp(_accountName: string, recordName: string, backup: BackupRecord): Promise<void> {
         this.marks.push({ recordName, backup });
-        this.existing.set(recordName, { checksum: backup.checksum, key: backup.key });
+        this.existing.set(recordName, { checksum: backup.checksum, key: backup.key, destination: backup.destination });
     }
 }
 
@@ -152,34 +158,31 @@ function source(opts: { authenticated: boolean; count: number; downloads?: strin
 }
 
 const archive = (): PhotoArchive => new FakeArchive() as unknown as PhotoArchive;
-const settings = (layout: PhotoLayout = 'flat', naming: PhotoNaming = 'clean'): SettingsService =>
-    ({
-        // The filesystem `custom` preset resolves layout/naming from these, exercising the same paths as before.
-        destination: async () => ({ kind: 'filesystem', preset: 'custom' }),
-        photosLayout: async () => layout,
-        photosNaming: async () => naming,
-    }) as unknown as SettingsService;
+/**
+ * Default settings stub: no global Immich connection configured. Filesystem
+ * backups (the default per-account destination) never read it; only accounts
+ * routed to Immich do, so this keeps the common case simple.
+ */
+const settings = (): SettingsService => ({ immich: async () => null }) as unknown as SettingsService;
 
-/** A settings stub with the filesystem `immich` preset (flat + clean + XMP sidecars). */
-const immichPresetSettings = (): SettingsService =>
-    ({
-        destination: async () => ({ kind: 'filesystem', preset: 'immich' }),
-        photosLayout: async () => 'flat',
-        photosNaming: async () => 'clean',
-    }) as unknown as SettingsService;
-
-/** A settings stub whose destination is an Immich server (upload path). */
+/** A settings stub exposing a configured global Immich server (for the upload path). */
 const immichSettings = (over: Partial<{ recreateAlbums: boolean; syncFavorites: boolean }> = {}): SettingsService =>
     ({
-        destination: async () => ({ kind: 'immich', baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true, ...over }),
-        photosLayout: async () => 'flat',
-        photosNaming: async () => 'clean',
+        immich: async () => ({ baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true, ...over }),
     }) as unknown as SettingsService;
 
-/** A per-account source returning the given (possibly null) overrides for every account (prefix = the account id). */
-const accountSettings = (layout: PhotoLayout | null = null, naming: PhotoNaming | null = null): AccountSource => ({
-    getById: async (id: string) => ({ id, accountName: id, archivePrefix: null }),
-    photoSettings: async () => ({ layout, naming }),
+/**
+ * A per-account source returning the given overrides for every account (prefix
+ * pinned to the id). `over` pins the destination kind/preset; unset fields (and
+ * layout/naming) fall back to the built-in defaults (filesystem, `immich` preset).
+ */
+const accountSettings = (
+    layout: PhotoLayout | null = null,
+    naming: PhotoNaming | null = null,
+    over: { destination?: DestinationKind | null; preset?: FilesystemPreset | null } = {},
+): AccountSource => ({
+    getById: async (id: string) => ({ id, accountName: id, archivePrefix: id }),
+    photoSettings: async () => ({ destination: over.destination ?? null, preset: over.preset ?? null, layout, naming }),
 });
 
 describe('SyncPhotosJob', () => {
@@ -197,6 +200,24 @@ describe('SyncPhotosJob', () => {
         expect(all[0]!.resources.resOriginalRes?.downloadURL).toBe('https://x/0');
         // metadataOnly -> nothing archived.
         expect(store.marks).toHaveLength(0);
+    });
+
+    it('records the library asset count up front so the dashboard shows a stable total', async () => {
+        const progress = new SyncProgressRegistry();
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 7 }), new FakeStore(), archive(), silentLogger, settings(), undefined, undefined, progress);
+
+        await job.run({ batchSize: 10, metadataOnly: true, accountId: 'me@icloud.com' });
+
+        expect(progress.libraryTotal('me@icloud.com')).toBe(7);
+    });
+
+    it('skips the library count for a smart-album run (its subset would not match the whole-library count)', async () => {
+        const progress = new SyncProgressRegistry();
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 3 }), new FakeStore(), archive(), silentLogger, settings(), undefined, undefined, progress);
+
+        await job.run({ batchSize: 10, metadataOnly: true, smartAlbum: 'FAVORITE', accountId: 'me@icloud.com' });
+
+        expect(progress.libraryTotal('me@icloud.com')).toBeUndefined();
     });
 
     it('downloads and archives original bytes, recording each backup', async () => {
@@ -217,8 +238,8 @@ describe('SyncPhotosJob', () => {
     it('skips re-downloading originals whose checksum is unchanged', async () => {
         const store = new FakeStore();
         store.existing = new Map([
-            ['asset-0', { checksum: 'sum-0', key: 'me@icloud.com/photo-0.jpg' }],
-            ['asset-1', { checksum: 'sum-1', key: 'me@icloud.com/photo-1.jpg' }],
+            ['asset-0', { checksum: 'sum-0', key: 'me@icloud.com/photo-0.jpg', destination: 'filesystem' }],
+            ['asset-1', { checksum: 'sum-1', key: 'me@icloud.com/photo-1.jpg', destination: 'filesystem' }],
         ]);
         const downloads: string[] = [];
         const job = new SyncPhotosJob(source({ authenticated: true, count: 3, downloads }), store, archive(), silentLogger, settings());
@@ -233,7 +254,15 @@ describe('SyncPhotosJob', () => {
     it('organizes archived files by capture date under the date layout', async () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 2 }), store, arc as unknown as PhotoArchive, silentLogger, settings('date'));
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 2 }),
+            store,
+            arc as unknown as PhotoArchive,
+            silentLogger,
+            settings(),
+            undefined,
+            accountSettings('date', null),
+        );
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
@@ -249,7 +278,16 @@ describe('SyncPhotosJob', () => {
         const arc = new FakeArchive();
         const albums: AlbumFixture[] = [{ recordName: 'alb-1', name: 'Vacation', assetIds: [0, 1] }];
         // run-level layout override exercises the album path; asset-2 is in no album.
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 3, albums }), store, arc as unknown as PhotoArchive, silentLogger, settings());
+        // The account pins the browsable preset, which keeps sidecars off so the assertion is just the image keys.
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 3, albums }),
+            store,
+            arc as unknown as PhotoArchive,
+            silentLogger,
+            settings(),
+            undefined,
+            accountSettings(null, null, { preset: 'browsable' }),
+        );
 
         await job.run({ batchSize: 10, layout: 'album', accountId: 'me@icloud.com' });
 
@@ -264,7 +302,15 @@ describe('SyncPhotosJob', () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
         // ASSET_DATE is 2024-03-09 00:00:00 UTC -> 20240309-000000.
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 2 }), store, arc as unknown as PhotoArchive, silentLogger, settings('flat', 'datetime'));
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 2 }),
+            store,
+            arc as unknown as PhotoArchive,
+            silentLogger,
+            settings(),
+            undefined,
+            accountSettings(null, 'datetime'),
+        );
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
@@ -277,7 +323,15 @@ describe('SyncPhotosJob', () => {
     it('names archived files with a per-record hash when the hash scheme is configured', async () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, settings('flat', 'hash'));
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 1 }),
+            store,
+            arc as unknown as PhotoArchive,
+            silentLogger,
+            settings(),
+            undefined,
+            accountSettings(null, 'hash'),
+        );
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
@@ -288,7 +342,7 @@ describe('SyncPhotosJob', () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
         // Configured scheme is clean; the payload override forces hash for this run.
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, settings('flat', 'clean'));
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, settings());
 
         await job.run({ batchSize: 10, naming: 'hash', accountId: 'me@icloud.com' });
 
@@ -315,7 +369,7 @@ describe('SyncPhotosJob', () => {
         const arc = new FakeArchive();
         const cleanKey = 'me@icloud.com/photo-0.jpg';
         // asset-0 already backed up here with an older checksum; its bytes are on disk.
-        store.existing = new Map([['asset-0', { checksum: 'old', key: cleanKey }]]);
+        store.existing = new Map([['asset-0', { checksum: 'old', key: cleanKey, destination: 'filesystem' }]]);
         arc.stored.set(cleanKey, new Uint8Array([0]));
         const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, settings());
 
@@ -327,23 +381,23 @@ describe('SyncPhotosJob', () => {
         expect(store.marks[0]!.backup.key).toBe(cleanKey);
     });
 
-    it('applies an account override over the global default', async () => {
+    it('applies an account override over the preset baseline', async () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
-        // Global default is flat/clean; this account overrides layout to date.
+        // Preset baseline is flat/clean; this account overrides layout to date.
         const job = new SyncPhotosJob(
             source({ authenticated: true, count: 1 }),
             store,
             arc as unknown as PhotoArchive,
             silentLogger,
-            settings('flat', 'clean'),
+            settings(),
             undefined,
             accountSettings('date', null),
         );
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
-        // date layout from the override, clean naming inherited from the global default.
+        // date layout from the override, clean naming from the preset baseline.
         expect([...arc.stored.keys()]).toEqual(['me@icloud.com/2024/2024-03/photo-0.jpg']);
     });
 
@@ -355,12 +409,12 @@ describe('SyncPhotosJob', () => {
             store,
             arc as unknown as PhotoArchive,
             silentLogger,
-            settings('flat', 'clean'),
+            settings(),
             undefined,
             accountSettings('album', 'datetime'),
         );
 
-        // Payload pins flat/clean, overriding both the account override and the global default.
+        // Payload pins flat/clean, overriding both the account override and the preset baseline.
         await job.run({ batchSize: 10, layout: 'flat', naming: 'clean', accountId: 'me@icloud.com' });
 
         expect([...arc.stored.keys()]).toEqual(['me@icloud.com/photo-0.jpg']);
@@ -370,7 +424,7 @@ describe('SyncPhotosJob', () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
         const albums: AlbumFixture[] = [{ recordName: 'alb-1', name: 'Vacation', assetIds: [0] }];
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 1, albums }), store, arc as unknown as PhotoArchive, silentLogger, immichPresetSettings());
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 1, albums }), store, arc as unknown as PhotoArchive, silentLogger, settings());
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
@@ -385,7 +439,7 @@ describe('SyncPhotosJob', () => {
     it('immich preset writes no sidecar for an ordinary photo (no album, not a favorite)', async () => {
         const store = new FakeStore();
         const arc = new FakeArchive();
-        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, immichPresetSettings());
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 1 }), store, arc as unknown as PhotoArchive, silentLogger, settings());
 
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
 
@@ -408,6 +462,7 @@ describe('SyncPhotosJob', () => {
             silentLogger,
             immichSettings(),
             undefined,
+            accountSettings(null, null, { destination: 'immich' }),
             undefined,
             undefined,
             () => fakeUploader as unknown as import('../../src/modules/icloud/storage/immich.uploader.js').ImmichUploader,
@@ -417,6 +472,81 @@ describe('SyncPhotosJob', () => {
 
         expect(uploaded.map(u => u.record)).toEqual(['asset-0', 'asset-1']);
         expect(store.marks.map(m => m.backup.key)).toEqual(['immich-asset-0', 'immich-asset-1']);
+        // Each backup records the destination it went to, so a later switch re-runs it.
+        expect(store.marks.map(m => m.backup.destination)).toEqual(['immich', 'immich']);
+    });
+
+    it('re-uploads to Immich when the only recorded backup went to a different destination', async () => {
+        const store = new FakeStore();
+        // asset-0 was already archived to the filesystem (checksum matches the source);
+        // switching this account to Immich must not treat that as "already done".
+        store.existing = new Map([['asset-0', { checksum: 'sum-0', key: 'me@icloud.com/photo-0.jpg', destination: 'filesystem' }]]);
+        const uploaded: string[] = [];
+        const fakeUploader = {
+            backup: async (asset: { recordName: string }) => {
+                uploaded.push(asset.recordName);
+                return { id: `immich-${asset.recordName}`, duplicate: false };
+            },
+        };
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 1 }),
+            store,
+            archive(),
+            silentLogger,
+            immichSettings(),
+            undefined,
+            accountSettings(null, null, { destination: 'immich' }),
+            undefined,
+            undefined,
+            () => fakeUploader as unknown as import('../../src/modules/icloud/storage/immich.uploader.js').ImmichUploader,
+        );
+
+        await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
+
+        // The filesystem-tagged copy doesn't count for Immich, so the asset uploads.
+        expect(uploaded).toEqual(['asset-0']);
+        expect(store.marks.map(m => m.backup)).toMatchObject([{ key: 'immich-asset-0', destination: 'immich' }]);
+    });
+
+    it('force re-syncs every asset even when an up-to-date same-destination backup exists', async () => {
+        const store = new FakeStore();
+        const arc = new FakeArchive();
+        const downloads: string[] = [];
+        // Both assets are already archived to the filesystem with matching checksums —
+        // a normal run would skip them; force must re-download and re-store both.
+        store.existing = new Map([
+            ['asset-0', { checksum: 'sum-0', key: 'me@icloud.com/photo-0.jpg', destination: 'filesystem' }],
+            ['asset-1', { checksum: 'sum-1', key: 'me@icloud.com/photo-1.jpg', destination: 'filesystem' }],
+        ]);
+        const job = new SyncPhotosJob(source({ authenticated: true, count: 2, downloads }), store, arc as unknown as PhotoArchive, silentLogger, settings());
+
+        await job.run({ batchSize: 10, force: true, accountId: 'me@icloud.com' });
+
+        expect(downloads.sort()).toEqual(['https://x/0', 'https://x/1']);
+        expect(store.marks.map(m => m.recordName).sort()).toEqual(['asset-0', 'asset-1']);
+    });
+
+    it('skips the byte backup when the account routes to Immich but no server is configured', async () => {
+        const store = new FakeStore();
+        const arc = new FakeArchive();
+        const downloads: string[] = [];
+        // Account is set to Immich, but the global connection is unset (settings() → null).
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 2, downloads }),
+            store,
+            arc as unknown as PhotoArchive,
+            silentLogger,
+            settings(),
+            undefined,
+            accountSettings(null, null, { destination: 'immich' }),
+        );
+
+        await job.run({ batchSize: 10, accountId: 'me@icloud.com' });
+
+        // Nothing downloaded, uploaded, or archived: the run bails before touching bytes.
+        expect(downloads).toHaveLength(0);
+        expect(arc.stored.size).toBe(0);
+        expect(store.marks).toHaveLength(0);
     });
 
     it('syncs the single account named in the payload', async () => {
@@ -481,7 +611,7 @@ describe('SyncPhotosJob', () => {
             return inner(account, url);
         };
         const waits: number[] = [];
-        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, async ms => {
+        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, undefined, async ms => {
             waits.push(ms);
         });
 
@@ -503,7 +633,7 @@ describe('SyncPhotosJob', () => {
             download: async () => new Uint8Array([1, 2, 3, 4]),
         };
         const waits: number[] = [];
-        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, async ms => {
+        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, undefined, async ms => {
             waits.push(ms);
         });
 
@@ -521,7 +651,7 @@ describe('SyncPhotosJob', () => {
             throw new RateLimitError('rate limited', 429, 'slow down', 500);
         };
         const waits: number[] = [];
-        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, async ms => {
+        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, undefined, async ms => {
             waits.push(ms);
         });
 
@@ -544,7 +674,7 @@ describe('SyncPhotosJob', () => {
             return inner(account, url);
         };
         const waits: number[] = [];
-        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, async ms => {
+        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, undefined, async ms => {
             waits.push(ms);
         });
 
@@ -564,7 +694,7 @@ describe('SyncPhotosJob', () => {
         };
         const waits: number[] = [];
         // Abort during the backoff so the deferral loop bails instead of resuming.
-        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, async ms => {
+        const job = new SyncPhotosJob(src, store, arc as unknown as PhotoArchive, silentLogger, settings(), undefined, undefined, undefined, async ms => {
             waits.push(ms);
             controller.abort();
         });

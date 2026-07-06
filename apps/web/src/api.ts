@@ -64,12 +64,25 @@ export type PhotoLayout = 'flat' | 'date' | 'album';
 export type PhotoNaming = 'clean' | 'datetime' | 'hash';
 
 /** A filesystem organization preset (see the server's `photo.destination`). */
-export type FilesystemPreset = 'immich' | 'browsable' | 'custom';
+export type FilesystemPreset = 'immich' | 'browsable';
 
-/** Where photos are backed up, and how they're organized once there. */
-export type Destination =
-    | { kind: 'filesystem'; preset: FilesystemPreset }
-    | { kind: 'immich'; baseUrl: string; apiKey: string; recreateAlbums: boolean; syncFavorites: boolean };
+/** Where an account's photos go: a filesystem archive or an upload to Immich. */
+export type DestinationKind = 'filesystem' | 'immich';
+
+/**
+ * The global Immich connection, shared by every account that routes to Immich.
+ * Configured once in settings; `null` in {@link AppSettings} when unset.
+ */
+export interface ImmichSettings {
+    /** Base URL of the Immich server, e.g. `https://immich.example.com`. */
+    baseUrl: string;
+    /** An Immich API key with upload + album permissions. */
+    apiKey: string;
+    /** Recreate each iCloud album as an Immich album and add the assets to it. */
+    recreateAlbums: boolean;
+    /** Mark iCloud favorites as favorites in Immich on upload. */
+    syncFavorites: boolean;
+}
 
 export type NotificationChannel = 'none' | 'webhook' | 'email';
 
@@ -95,32 +108,34 @@ export interface NotificationSettings {
 }
 
 export interface AppSettings {
-    /** Where photos are backed up (filesystem preset vs Immich). */
-    destination: Destination;
-    /** On-disk layout, used by the filesystem `custom` preset. */
-    photosLayout: PhotoLayout;
-    /** On-disk filename scheme, used by the filesystem `custom` preset. */
-    photosNaming: PhotoNaming;
+    /** The global Immich connection shared by every account routing to Immich, or `null` when unset. */
+    immich: ImmichSettings | null;
     syncCron: string;
     notifications: NotificationSettings;
 }
 
 /**
- * An account's on-disk organization: its layout/naming overrides (`null` = inherit
- * the global default) plus the `defaults` those null fields fall back to.
+ * An account's backup destination + on-disk organization: its overrides (`null` =
+ * inherit the built-in default) plus the `defaults` those null fields fall back to.
  */
 export interface AccountSettings {
+    /** Destination override (filesystem archive vs Immich upload), or `null` to inherit the default. */
+    photosDestination: DestinationKind | null;
+    /** Filesystem preset override, or `null` to inherit the default. Ignored when the destination is Immich. */
+    photosPreset: FilesystemPreset | null;
     photosLayout: PhotoLayout | null;
     photosNaming: PhotoNaming | null;
-    /** Custom photo-archive path prefix, or `null` to use the default (the account id). */
+    /** Custom photo-archive path prefix, or `null` to use the default (the Apple ID's local part). */
     archivePrefix: string | null;
+    /** The prefix an unset `archivePrefix` defaults to (the Apple ID's local part), or `null` if the account is gone. */
+    defaultPrefix: string | null;
     /** True while a prefix change's file move is still queued or running. */
     relocating: boolean;
     /** The last move's failure summary, or `null` if it succeeded / none ran. */
     relocationError: string | null;
-    defaults: { photosLayout: PhotoLayout; photosNaming: PhotoNaming };
-    /** The global destination; layout/naming overrides only apply under the filesystem `custom` preset. */
-    destination: Destination;
+    defaults: { photosDestination: DestinationKind; photosPreset: FilesystemPreset; photosLayout: PhotoLayout; photosNaming: PhotoNaming };
+    /** Whether a global Immich connection is configured — the UI warns when this account routes to Immich but none is set. */
+    immichConfigured: boolean;
 }
 
 export interface Stats {
@@ -130,6 +145,8 @@ export interface Stats {
     schedule: string;
     /** Whether a sync is currently running for this account. */
     running: boolean;
+    /** The iCloud library's asset count, pulled at the last sync's start, or `null` if no sync has run. Used as the backup-progress denominator. */
+    libraryTotal: number | null;
     total: number;
     favorites: number;
     /** Assets whose original bytes are archived to storage. */
@@ -228,23 +245,42 @@ export const api = {
     logout: (id: string) => request<LoginResult>(`${accountPath(id)}/logout`, { method: 'POST' }),
     /** Forget the session and unregister the account entirely. */
     removeAccount: (id: string) => request<{ state: string }>(accountPath(id), { method: 'DELETE' }),
-    triggerSync: (id: string) => request<{ queued: boolean; job: string }>(`${accountPath(id)}/sync`, { method: 'POST', body: '{}' }),
+    /**
+     * Enqueue a sync of one account. Pass `{ force: true }` for a full re-sync that
+     * re-downloads and re-stores every asset, ignoring what's already backed up
+     * (e.g. after switching the account's destination).
+     */
+    triggerSync: (id: string, opts: { force?: boolean } = {}) =>
+        request<{ queued: boolean; job: string }>(`${accountPath(id)}/sync`, { method: 'POST', body: JSON.stringify(opts) }),
     /** Request cancellation of an account's running sync. `cancelled` is whether a run was actively aborted. */
     cancelSync: (id: string) => request<{ cancelled: boolean }>(`${accountPath(id)}/sync/cancel`, { method: 'POST' }),
     stats: (id: string) => request<Stats>(`${accountPath(id)}/stats`),
     settings: () => request<AppSettings>('/icloud/settings'),
-    updateSettings: (patch: Partial<Pick<AppSettings, 'destination' | 'photosLayout' | 'photosNaming' | 'syncCron' | 'notifications'>>) =>
+    updateSettings: (patch: Partial<Pick<AppSettings, 'immich' | 'syncCron' | 'notifications'>>) =>
         request<AppSettings>('/icloud/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
     accountSettings: (id: string) => request<AccountSettings>(`${accountPath(id)}/settings`),
-    /** Patch an account's layout/naming/prefix overrides; `null` (or `''` for the prefix) clears an override back to the default. */
+    /** Patch an account's destination/layout/naming/prefix overrides; `null` (or `''` for the prefix) clears an override back to the default. */
     updateAccountSettings: (
         id: string,
-        patch: { photosLayout?: PhotoLayout | null; photosNaming?: PhotoNaming | null; archivePrefix?: string | null },
+        patch: {
+            photosDestination?: DestinationKind | null;
+            photosPreset?: FilesystemPreset | null;
+            photosLayout?: PhotoLayout | null;
+            photosNaming?: PhotoNaming | null;
+            archivePrefix?: string | null;
+        },
     ) => request<AccountSettings>(`${accountPath(id)}/settings`, { method: 'PATCH', body: JSON.stringify(patch) }),
     /** Resume a relocation that failed part-way (re-runs the recorded move). Returns the updated settings. */
     retryRelocation: (id: string) => request<AccountSettings>(`${accountPath(id)}/relocate/retry`, { method: 'POST', body: '{}' }),
     /** Send a test notification over the configured channel; rejects (422) with the error if it fails. */
     testNotification: () => request<{ sent: boolean }>('/icloud/notifications/test', { method: 'POST', body: '{}' }),
+    /**
+     * Test an Immich connection: pass the in-progress `{ baseUrl, apiKey }` to verify
+     * unsaved values, or omit to test the saved connection. Resolves `{ ok: true }`
+     * on success; rejects (422) with the failure message otherwise.
+     */
+    testImmich: (connection?: { baseUrl: string; apiKey: string }) =>
+        request<{ ok: boolean }>('/icloud/immich/test', { method: 'POST', body: JSON.stringify(connection ?? {}) }),
     listPhotos: (id: string, params: ListPhotosParams = {}) => {
         const q = new URLSearchParams();
         if (params.limit != null) q.set('limit', String(params.limit));

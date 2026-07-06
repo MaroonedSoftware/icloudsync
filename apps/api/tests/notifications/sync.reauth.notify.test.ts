@@ -10,7 +10,7 @@ const ACCOUNT_ID = '33333333-3333-4333-8333-333333333333';
 const APPLE_ID = 'me@icloud.com';
 
 const silentLogger: Logger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
-const settings = { photosLayout: async () => 'flat', photosNaming: async () => 'clean' } as unknown as SettingsService;
+const settings = { immich: async () => null } as unknown as SettingsService;
 const store = {
     upsertBatch: async () => 0,
     backedUp: async () => new Map(),
@@ -21,7 +21,7 @@ const archive = {} as PhotoArchive;
 /** Resolves the Apple ID + prefix for the account under test. */
 const accounts = {
     getById: async (id: string) => ({ id, accountName: APPLE_ID, archivePrefix: null }),
-    photoSettings: async () => ({ layout: null, naming: null }),
+    photoSettings: async () => ({ destination: null, preset: null, layout: null, naming: null }),
 };
 
 /** An empty photo library (yields no assets), enough to exercise the authenticated path. */

@@ -1,38 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
     destinationNeedsAlbums,
-    destinationSettingSchema,
     filesystemDestination,
+    immichDestination,
+    immichSettingsSchema,
     type Destination,
 } from '../../src/modules/icloud/storage/photo.destination.js';
 
 describe('filesystemDestination', () => {
-    it('immich preset → flat, clean, sidecars on', () => {
-        expect(filesystemDestination('immich', { layout: 'date', naming: 'hash' })).toEqual({
+    it('keeps the caller-supplied layout/naming and turns sidecars on for the immich preset', () => {
+        expect(filesystemDestination('immich', { layout: 'album', naming: 'datetime' })).toEqual({
             kind: 'filesystem',
             preset: 'immich',
-            layout: 'flat',
-            naming: 'clean',
+            layout: 'album',
+            naming: 'datetime',
             sidecars: true,
         });
     });
 
-    it('browsable preset → date tree, clean names, no sidecars', () => {
+    it('keeps the caller-supplied layout/naming and leaves sidecars off for the browsable preset', () => {
         expect(filesystemDestination('browsable', { layout: 'flat', naming: 'hash' })).toEqual({
             kind: 'filesystem',
             preset: 'browsable',
-            layout: 'date',
-            naming: 'clean',
-            sidecars: false,
-        });
-    });
-
-    it('custom preset → the caller-supplied layout/naming, no sidecars', () => {
-        expect(filesystemDestination('custom', { layout: 'album', naming: 'datetime' })).toEqual({
-            kind: 'filesystem',
-            preset: 'custom',
-            layout: 'album',
-            naming: 'datetime',
+            layout: 'flat',
+            naming: 'hash',
             sidecars: false,
         });
     });
@@ -41,7 +32,7 @@ describe('filesystemDestination', () => {
 describe('destinationNeedsAlbums', () => {
     const fs = (over: Partial<Extract<Destination, { kind: 'filesystem' }>>): Destination => ({
         kind: 'filesystem',
-        preset: 'custom',
+        preset: 'browsable',
         layout: 'flat',
         naming: 'clean',
         sidecars: false,
@@ -61,14 +52,9 @@ describe('destinationNeedsAlbums', () => {
     });
 });
 
-describe('destinationSettingSchema', () => {
-    it('accepts a filesystem preset', () => {
-        expect(destinationSettingSchema.parse({ kind: 'filesystem', preset: 'immich' })).toEqual({ kind: 'filesystem', preset: 'immich' });
-    });
-
-    it('defaults the Immich reconcile flags when omitted', () => {
-        expect(destinationSettingSchema.parse({ kind: 'immich', baseUrl: 'https://immich.test', apiKey: 'k' })).toEqual({
-            kind: 'immich',
+describe('immichSettingsSchema', () => {
+    it('defaults the reconcile flags when omitted', () => {
+        expect(immichSettingsSchema.parse({ baseUrl: 'https://immich.test', apiKey: 'k' })).toEqual({
             baseUrl: 'https://immich.test',
             apiKey: 'k',
             recreateAlbums: true,
@@ -76,12 +62,20 @@ describe('destinationSettingSchema', () => {
         });
     });
 
-    it('rejects an Immich destination with a non-URL base or empty key', () => {
-        expect(destinationSettingSchema.safeParse({ kind: 'immich', baseUrl: 'not a url', apiKey: 'k' }).success).toBe(false);
-        expect(destinationSettingSchema.safeParse({ kind: 'immich', baseUrl: 'https://immich.test', apiKey: '' }).success).toBe(false);
+    it('rejects a non-URL base or an empty key', () => {
+        expect(immichSettingsSchema.safeParse({ baseUrl: 'not a url', apiKey: 'k' }).success).toBe(false);
+        expect(immichSettingsSchema.safeParse({ baseUrl: 'https://immich.test', apiKey: '' }).success).toBe(false);
     });
+});
 
-    it('rejects an unknown filesystem preset', () => {
-        expect(destinationSettingSchema.safeParse({ kind: 'filesystem', preset: 'nope' }).success).toBe(false);
+describe('immichDestination', () => {
+    it('lifts a stored connection into a resolved Immich destination', () => {
+        expect(immichDestination({ baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: false, syncFavorites: true })).toEqual({
+            kind: 'immich',
+            baseUrl: 'https://immich.test',
+            apiKey: 'k',
+            recreateAlbums: false,
+            syncFavorites: true,
+        });
     });
 });

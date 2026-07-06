@@ -13,6 +13,7 @@ import { ICloudService } from '../../src/modules/icloud/icloud.service.js';
 import { PhotoArchive } from '../../src/modules/icloud/storage/photo.archive.js';
 import { PhotosRepository, type ListPhotosOptions, type ListPhotosResult, type PhotoStats, type SyncedPhoto } from '../../src/modules/icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../../src/modules/icloud/sync/sync.registry.js';
+import { SyncProgressRegistry } from '../../src/modules/icloud/sync/sync.progress.registry.js';
 import { SettingsService } from '../../src/modules/settings/settings.service.js';
 
 /** In-memory archive stand-in; serves bytes for keys it's been seeded with. */
@@ -124,6 +125,7 @@ describe('icloud photos routes', () => {
     let broker: FakeBroker;
     let archive: FakeArchive;
     let syncRegistry: SyncRegistry;
+    let syncProgress: SyncProgressRegistry;
     let icloud: { download: (id: string, url: string) => Promise<Uint8Array>; listAccounts: () => Promise<Array<{ id: string; account: string }>> };
 
     beforeEach(() => {
@@ -131,6 +133,7 @@ describe('icloud photos routes', () => {
         broker = new FakeBroker();
         archive = new FakeArchive();
         syncRegistry = new SyncRegistry();
+        syncProgress = new SyncProgressRegistry();
         icloud = { download: async () => new Uint8Array([1, 2, 3]), listAccounts: async () => [{ id: ACCOUNT_ID, account: 'me@icloud.com' }] };
 
         const registry = createRegistry();
@@ -141,6 +144,7 @@ describe('icloud photos routes', () => {
         registry.register(PhotoArchive).useInstance(archive as unknown as PhotoArchive);
         registry.register(JobBroker).useInstance(broker as unknown as JobBroker);
         registry.register(SyncRegistry).useInstance(syncRegistry);
+        registry.register(SyncProgressRegistry).useInstance(syncProgress);
         registry.register(SettingsService).useInstance({ syncCron: async () => '0 */6 * * *' } as unknown as SettingsService);
 
         server = createApiApp(registry.build()).listen(0);
@@ -152,7 +156,13 @@ describe('icloud photos routes', () => {
     it('reports backup stats with the schedule and running state', async () => {
         const res = await fetch(`${base}${acct}/stats`);
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ id: ACCOUNT_ID, schedule: '0 */6 * * *', running: false, ...STATS });
+        expect(await res.json()).toEqual({ id: ACCOUNT_ID, schedule: '0 */6 * * *', running: false, libraryTotal: null, ...STATS });
+    });
+
+    it('reports the library total pulled at the last sync\'s start', async () => {
+        syncProgress.setLibraryTotal(ACCOUNT_ID, 4200);
+        const res = await fetch(`${base}${acct}/stats`);
+        expect(await res.json()).toMatchObject({ libraryTotal: 4200 });
     });
 
     it('reports running: true while a sync is queued or active for the account', async () => {

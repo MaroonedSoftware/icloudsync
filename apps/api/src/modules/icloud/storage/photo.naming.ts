@@ -21,6 +21,9 @@ export type PhotoNaming = 'clean' | 'datetime' | 'hash';
 /** All valid naming schemes (for config validation). */
 export const PHOTO_NAMINGS = ['clean', 'datetime', 'hash'] as const;
 
+/** The naming scheme an account falls back to when it has not pinned its own override. */
+export const DEFAULT_PHOTO_NAMING: PhotoNaming = 'clean';
+
 /** The minimal asset shape a naming scheme needs. */
 export interface NamingAsset {
     recordName: string;

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import {
     api,
     type AppSettings,
-    type Destination,
     type FilesystemPreset,
+    type ImmichSettings,
     type NotificationChannel,
     type NotificationSettings,
     type PhotoLayout,
@@ -35,21 +35,27 @@ export const PRESETS: { value: FilesystemPreset; label: string; hint: string }[]
         label: 'Browsable archive',
         hint: 'A YYYY/YYYY-MM date tree with original filenames — for browsing the raw files yourself.',
     },
-    {
-        value: 'custom',
-        label: 'Custom…',
-        hint: 'Choose the folder layout and filename scheme by hand.',
-    },
 ];
 
 /** The human label for a layout/naming value (falls back to the raw value). */
 export const layoutLabel = (v: PhotoLayout): string => LAYOUTS.find(l => l.value === v)?.label ?? v;
 export const namingLabel = (v: PhotoNaming): string => NAMINGS.find(n => n.value === v)?.label ?? v;
-const presetHint = (v: FilesystemPreset): string => PRESETS.find(p => p.value === v)?.hint ?? '';
 
-/** A blank Immich destination, used when switching to the Immich destination. */
-const EMPTY_IMMICH: Extract<Destination, { kind: 'immich' }> = { kind: 'immich', baseUrl: '', apiKey: '', recreateAlbums: true, syncFavorites: true };
-const DEFAULT_DESTINATION: Destination = { kind: 'filesystem', preset: 'immich' };
+/** A blank Immich connection, used when enabling the Immich section. */
+const EMPTY_IMMICH: ImmichSettings = { baseUrl: '', apiKey: '', recreateAlbums: true, syncFavorites: true };
+
+/** The state of the Immich connection probe behind the status badge + test button. */
+type ImmichStatus = { state: 'unknown' | 'checking' | 'ok' | 'fail'; message?: string };
+
+/** How each probe state renders in the header badge (`unknown` shows nothing). */
+const IMMICH_BADGE: Record<Exclude<ImmichStatus['state'], 'unknown'>, { className: string; label: string }> = {
+    checking: { className: 'badge checking', label: 'Checking…' },
+    ok: { className: 'badge ok', label: 'Connected' },
+    fail: { className: 'badge danger', label: 'Unreachable' },
+};
+
+/** Tidy a pasted Immich URL: trim surrounding whitespace and any trailing slashes. */
+const normalizeImmichUrl = (url: string): string => url.trim().replace(/\/+$/, '');
 
 const CRON_PRESETS = [
     { value: '0 * * * *', label: 'Hourly' },
@@ -79,11 +85,14 @@ function notificationsPatch(n: NotificationSettings): NotificationSettings {
     return patch;
 }
 
-/** Edit the database-backed settings (photo layout, file naming, sync schedule, admin notifications). */
+/** Edit the database-backed settings (global Immich connection, sync schedule, admin notifications). */
 export function Settings({ onChange }: { onChange?: () => void }) {
-    const [destination, setDestination] = useState<Destination>(DEFAULT_DESTINATION);
-    const [layout, setLayout] = useState<PhotoLayout>('flat');
-    const [naming, setNaming] = useState<PhotoNaming>('clean');
+    const [immich, setImmich] = useState<ImmichSettings | null>(null);
+    // Remember the last-entered connection so toggling the section off then on doesn't lose it.
+    const [immichDraft, setImmichDraft] = useState<ImmichSettings>(EMPTY_IMMICH);
+    const [showKey, setShowKey] = useState(false);
+    // Result of the last Immich connection probe (on-load for the saved server, or on demand via the button).
+    const [immichStatus, setImmichStatus] = useState<ImmichStatus>({ state: 'unknown' });
     const [cron, setCron] = useState('0 */6 * * *');
     const [notifications, setNotifications] = useState<NotificationSettings>(DEFAULT_NOTIFICATIONS);
     const [loaded, setLoaded] = useState(false);
@@ -95,11 +104,22 @@ export function Settings({ onChange }: { onChange?: () => void }) {
     const [testError, setTestError] = useState<string>();
 
     const apply = (s: AppSettings) => {
-        setDestination(s.destination ?? DEFAULT_DESTINATION);
-        setLayout(s.photosLayout);
-        setNaming(s.photosNaming);
+        setImmich(s.immich ?? null);
+        if (s.immich) setImmichDraft(s.immich);
         setCron(s.syncCron);
         setNotifications(s.notifications ?? DEFAULT_NOTIFICATIONS);
+    };
+
+    // Probe an Immich connection and reflect the result in the status badge. Pass
+    // the in-progress values to verify an edit, or omit to test the saved server.
+    const probeImmich = async (connection?: { baseUrl: string; apiKey: string }) => {
+        setImmichStatus({ state: 'checking' });
+        try {
+            await api.testImmich(connection);
+            setImmichStatus({ state: 'ok' });
+        } catch (err) {
+            setImmichStatus({ state: 'fail', message: err instanceof Error ? err.message : String(err) });
+        }
     };
 
     useEffect(() => {
@@ -108,6 +128,8 @@ export function Settings({ onChange }: { onChange?: () => void }) {
             .then(s => {
                 apply(s);
                 setLoaded(true);
+                // Show the saved server's reachability up front (best-effort).
+                if (s.immich) void probeImmich();
             })
             .catch(err => setError(String(err)));
     }, []);
@@ -120,12 +142,17 @@ export function Settings({ onChange }: { onChange?: () => void }) {
             setSaved(false);
         };
 
-    // Switch destination kind, preserving any in-progress Immich fields when toggling back.
-    const setKind = (kind: Destination['kind']) =>
-        edit(setDestination)(kind === 'immich' ? (destination.kind === 'immich' ? destination : EMPTY_IMMICH) : DEFAULT_DESTINATION);
-    const setPreset = (preset: FilesystemPreset) => edit(setDestination)({ kind: 'filesystem', preset });
-    const editImmich = (patch: Partial<Extract<Destination, { kind: 'immich' }>>) => {
-        if (destination.kind === 'immich') edit(setDestination)({ ...destination, ...patch });
+    // Turn the Immich section on/off, restoring the last-entered connection when re-enabled.
+    const toggleImmich = (on: boolean) => {
+        setImmichStatus({ state: 'unknown' });
+        edit(setImmich)(on ? immichDraft : null);
+    };
+    const editImmich = (patch: Partial<ImmichSettings>) => {
+        // Any edit invalidates the last probe; the badge goes neutral until re-tested.
+        setImmichStatus({ state: 'unknown' });
+        const next = { ...(immich ?? immichDraft), ...patch };
+        setImmichDraft(next);
+        edit(setImmich)(next);
     };
 
     const editNotifications = (patch: Partial<NotificationSettings>) => edit(setNotifications)({ ...notifications, ...patch });
@@ -138,10 +165,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
         try {
             apply(
                 await api.updateSettings({
-                    destination,
-                    // Persist the raw layout/naming too so the filesystem `custom` preset keeps them.
-                    photosLayout: layout,
-                    photosNaming: naming,
+                    immich,
                     syncCron: cron,
                     notifications: notificationsPatch(notifications),
                 }),
@@ -179,87 +203,91 @@ export function Settings({ onChange }: { onChange?: () => void }) {
 
             {error && <div className="error">{error}</div>}
 
-            <label htmlFor="destination">Where photos go</label>
-            <select id="destination" value={destination.kind} disabled={!loaded} onChange={e => setKind(e.target.value as Destination['kind'])}>
-                <option value="filesystem">Filesystem archive</option>
-                <option value="immich">Immich (upload via API)</option>
-            </select>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h3 style={{ margin: 0 }}>Immich server</h3>
+                {immich && immichStatus.state !== 'unknown' && (
+                    <span className={IMMICH_BADGE[immichStatus.state].className} title={immichStatus.message}>
+                        <span className="dot" />
+                        {IMMICH_BADGE[immichStatus.state].label}
+                    </span>
+                )}
+            </div>
+            <p className="muted" style={{ marginTop: 4 }}>
+                Configure a shared Immich server here, then pick <strong>Immich</strong> as the destination for any account on its own page. Leave this
+                off to archive every account to the filesystem.
+            </p>
 
-            {destination.kind === 'filesystem' && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" checked={immich !== null} disabled={!loaded} onChange={e => toggleImmich(e.target.checked)} />
+                <span>Connect an Immich server</span>
+            </label>
+
+            {immich && (
                 <>
-                    <label htmlFor="preset">Organization</label>
-                    <select id="preset" value={destination.preset} disabled={!loaded} onChange={e => setPreset(e.target.value as FilesystemPreset)}>
-                        {PRESETS.map(p => (
-                            <option key={p.value} value={p.value}>
-                                {p.label}
-                            </option>
-                        ))}
-                    </select>
-                    <p className="muted" style={{ marginTop: -6 }}>
-                        {presetHint(destination.preset)}
-                    </p>
-
-                    {destination.preset === 'custom' && (
-                        <>
-                            <label htmlFor="layout">Folder layout</label>
-                            <select id="layout" value={layout} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
-                                {LAYOUTS.map(l => (
-                                    <option key={l.value} value={l.value}>
-                                        {l.label}
-                                    </option>
-                                ))}
-                            </select>
-
-                            <label htmlFor="naming">File naming</label>
-                            <select id="naming" value={naming} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
-                                {NAMINGS.map(n => (
-                                    <option key={n.value} value={n.value}>
-                                        {n.label}
-                                    </option>
-                                ))}
-                            </select>
-                            <p className="muted" style={{ marginTop: -6 }}>
-                                An account can override the layout/naming on its own page. Applies to newly synced photos.
-                            </p>
-                        </>
-                    )}
-                </>
-            )}
-
-            {destination.kind === 'immich' && (
-                <>
-                    <label htmlFor="immich-url">Immich server URL</label>
+                    <label htmlFor="immich-url" style={{ marginTop: 12 }}>
+                        Immich server URL
+                    </label>
                     <input
                         id="immich-url"
                         type="url"
-                        value={destination.baseUrl}
+                        value={immich.baseUrl}
                         disabled={!loaded}
                         spellCheck={false}
                         placeholder="https://immich.example.com"
                         onChange={e => editImmich({ baseUrl: e.target.value })}
+                        onBlur={e => {
+                            const tidy = normalizeImmichUrl(e.target.value);
+                            if (tidy !== e.target.value) editImmich({ baseUrl: tidy });
+                        }}
                     />
 
                     <label htmlFor="immich-key">API key</label>
-                    <input
-                        id="immich-key"
-                        type="password"
-                        value={destination.apiKey}
-                        disabled={!loaded}
-                        autoComplete="new-password"
-                        placeholder="Immich → Account Settings → API Keys"
-                        onChange={e => editImmich({ apiKey: e.target.value })}
-                    />
+                    <div className="password-field">
+                        <input
+                            id="immich-key"
+                            type={showKey ? 'text' : 'password'}
+                            value={immich.apiKey}
+                            disabled={!loaded}
+                            autoComplete="new-password"
+                            placeholder="Immich → Account Settings → API Keys"
+                            onChange={e => editImmich({ apiKey: e.target.value })}
+                        />
+                        <button
+                            type="button"
+                            className="toggle-visibility"
+                            aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                            aria-pressed={showKey}
+                            onClick={() => setShowKey(v => !v)}
+                        >
+                            {showKey ? 'Hide' : 'Show'}
+                        </button>
+                    </div>
 
-                    <label className="row" style={{ gap: 8, alignItems: 'center', marginTop: 8 }}>
-                        <input type="checkbox" checked={destination.recreateAlbums} disabled={!loaded} onChange={e => editImmich({ recreateAlbums: e.target.checked })} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6, marginBottom: 12 }}>
+                        <button
+                            type="button"
+                            className="compact"
+                            style={{ width: 'auto' }}
+                            disabled={!loaded || immichStatus.state === 'checking' || !immich.baseUrl.trim() || !immich.apiKey.trim()}
+                            onClick={() => void probeImmich({ baseUrl: immich.baseUrl, apiKey: immich.apiKey })}
+                        >
+                            {immichStatus.state === 'checking' ? 'Testing…' : 'Test connection'}
+                        </button>
+                        {immichStatus.state === 'ok' && <span className="muted">✓ Reachable and the key works.</span>}
+                    </div>
+                    {immichStatus.state === 'fail' && <div className="error">Connection failed: {immichStatus.message}</div>}
+
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                        <input type="checkbox" checked={immich.recreateAlbums} disabled={!loaded} onChange={e => editImmich({ recreateAlbums: e.target.checked })} />
                         <span>Recreate iCloud albums as Immich albums</span>
                     </label>
-                    <label className="row" style={{ gap: 8, alignItems: 'center' }}>
-                        <input type="checkbox" checked={destination.syncFavorites} disabled={!loaded} onChange={e => editImmich({ syncFavorites: e.target.checked })} />
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input type="checkbox" checked={immich.syncFavorites} disabled={!loaded} onChange={e => editImmich({ syncFavorites: e.target.checked })} />
                         <span>Mark iCloud favorites as favorites in Immich</span>
                     </label>
                     <p className="muted" style={{ marginTop: 6 }}>
-                        Immich owns storage: it dedupes by checksum and builds the timeline from each photo's metadata, so there's no folder layout to choose.
+                        Immich owns storage: it dedupes by checksum and builds the timeline from each photo's metadata. These settings apply to every
+                        account that uploads to Immich.
                     </p>
                 </>
             )}

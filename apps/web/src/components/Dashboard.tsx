@@ -72,11 +72,12 @@ export function Dashboard({ id, account, onChanged }: { id: string; account: str
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [syncing, refresh]);
 
-    const syncNow = async () => {
+    const syncNow = async (force = false) => {
+        if (force && !window.confirm('Re-download and re-store every photo, ignoring what is already backed up? Useful after changing where this account backs up. This can take a while for a large library.')) return;
         setBusy(true);
         setError(undefined);
         try {
-            await api.triggerSync(id);
+            await api.triggerSync(id, { force });
             pollUntil.current = Date.now() + MAX_POLL_MS;
             setSyncing(true);
             await refresh();
@@ -121,7 +122,10 @@ export function Dashboard({ id, account, onChanged }: { id: string; account: str
         }
     };
 
-    const backedUpLabel = stats ? `${count(stats.backedUp)} of ${count(stats.total)}` : '—';
+    // Prefer the library size pulled at the sync's start as the denominator so it
+    // stays fixed while a first sync pages metadata in; fall back to rows synced.
+    const backupDenominator = stats ? (stats.libraryTotal ?? stats.total) : 0;
+    const backedUpLabel = stats ? `${count(stats.backedUp)} of ${count(backupDenominator)}` : '—';
 
     return (
         <>
@@ -147,9 +151,14 @@ export function Dashboard({ id, account, onChanged }: { id: string; account: str
                         {cancelling ? 'Cancelling…' : '✕ Cancel'}
                     </button>
                 ) : (
-                    <button className="primary compact" onClick={syncNow} disabled={busy}>
-                        {busy ? 'Starting…' : '↻ Sync now'}
-                    </button>
+                    <div className="panel-actions">
+                        <button className="primary compact" onClick={() => syncNow()} disabled={busy}>
+                            {busy ? 'Starting…' : '↻ Sync now'}
+                        </button>
+                        <button className="compact" onClick={() => syncNow(true)} disabled={busy} title="Re-download and re-store every photo, ignoring what's already backed up.">
+                            Full re-sync
+                        </button>
+                    </div>
                 )}
             </div>
 

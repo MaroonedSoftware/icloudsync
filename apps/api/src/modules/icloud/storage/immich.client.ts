@@ -139,4 +139,26 @@ export class ImmichClient {
         const body = (await res.json().catch(() => ({}))) as { res?: string };
         return body.res === 'pong';
     }
+
+    /**
+     * Verify the connection end to end for the settings UI: the server answers a
+     * ping (URL is right and reachable), then `GET /api/users/me` succeeds (the API
+     * key is accepted). Resolves on success; throws {@link ImmichError} with a
+     * user-facing message otherwise — a bad host, a wrong port, or a rejected key
+     * each map to a distinct reason.
+     */
+    async verify(): Promise<void> {
+        let reachable: boolean;
+        try {
+            reachable = await this.ping();
+        } catch (error) {
+            // fetch rejects (DNS failure, refused connection, TLS error, …) before any response.
+            throw new ImmichError(0, `could not reach the server: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (!reachable) throw new ImmichError(0, 'server did not respond to a ping — check the URL');
+        const res = await this.fetchImpl(`${this.base}/users/me`, { headers: this.headers() });
+        if (!res.ok) {
+            throw new ImmichError(res.status, res.status === 401 || res.status === 403 ? 'the API key was rejected' : `server returned ${res.status}`);
+        }
+    }
 }

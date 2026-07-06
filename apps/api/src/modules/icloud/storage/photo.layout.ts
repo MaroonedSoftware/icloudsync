@@ -4,6 +4,9 @@ export type PhotoLayout = 'flat' | 'date' | 'album';
 /** All valid layout names (for config validation). */
 export const PHOTO_LAYOUTS = ['flat', 'date', 'album'] as const;
 
+/** The layout an account falls back to when it has not pinned its own override. */
+export const DEFAULT_PHOTO_LAYOUT: PhotoLayout = 'flat';
+
 /** Make an arbitrary string (album name, etc.) safe as a single path segment. */
 function safeSegment(value: string): string {
     const cleaned = value.replace(/[/\\\x00]/g, '_').replace(/^\.+/, '').trim();

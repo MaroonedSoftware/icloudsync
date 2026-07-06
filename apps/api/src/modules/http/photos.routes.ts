@@ -7,6 +7,7 @@ import { ICloudService } from '../icloud/icloud.service.js';
 import { PhotoArchive } from '../icloud/storage/photo.archive.js';
 import { PhotosRepository } from '../icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../icloud/sync/sync.registry.js';
+import { SyncProgressRegistry } from '../icloud/sync/sync.progress.registry.js';
 import { SYNC_PHOTOS_JOB } from '../icloud/sync/sync.photos.job.js';
 import { inFlightJobId } from '../icloud/sync/job.status.js';
 import { dispatchSync, enqueueSync } from '../icloud/sync/sync.dispatch.js';
@@ -55,6 +56,9 @@ const syncSchema = z
         smartAlbum: smartAlbumSchema.optional(),
         batchSize: z.coerce.number().int().min(1).max(1000).optional(),
         zoneName: z.string().min(1).optional(),
+        // Force a full re-sync: re-download and re-store every asset even when an
+        // up-to-date backup is already recorded (e.g. to rebuild a destination).
+        force: z.boolean().optional(),
     })
     .default({});
 
@@ -71,15 +75,17 @@ function inFlightSyncJob(broker: JobBroker, registry: SyncRegistry, accountId: s
  * rendition's signed URL recorded at sync time.
  *
  * - `GET /icloud/accounts/:accountId/stats` — aggregate backup stats, the sync
- *   schedule, and whether a sync is currently running for the account.
+ *   schedule, whether a sync is currently running, and `libraryTotal` (the iCloud
+ *   library's asset count pulled at the last sync's start, or `null` if none has
+ *   run) for the UI's progress denominator.
  * - `GET /icloud/accounts/:accountId/photos` — page the synced library (`limit`,
  *   `offset`, `favorite`, `includeHidden`, `includeDeleted`, `order`).
  * - `GET /icloud/accounts/:accountId/photos/:recordName` — one synced asset's metadata.
  * - `GET /icloud/accounts/:accountId/photos/:recordName/download?resolution=resOriginalRes` —
  *   stream a rendition's bytes through the API.
  * - `POST /icloud/accounts/:accountId/sync` — enqueue an on-demand sync of one
- *   account; body is an optional {@link SyncPhotosPayload}. Returns `202
- *   { queued: true, job, jobId }`.
+ *   account; body is an optional {@link SyncPhotosPayload} (`force: true` re-backs-up
+ *   every asset, ignoring what's already stored). Returns `202 { queued: true, job, jobId }`.
  * - `POST /icloud/sync` — fan a sync out across **every** registered account,
  *   one job each (`202 { queued: <count>, job, jobs: [{ id, jobId }] }`).
  * - `POST /icloud/accounts/:accountId/sync/cancel` — request cancellation of the
@@ -98,7 +104,11 @@ export function icloudPhotosRouter() {
         const id = accountIdParam(ctx);
         const [stats, schedule] = await Promise.all([repo.stats(id), settings.syncCron()]);
         const jobId = await inFlightSyncJob(ctx.container.get(JobBroker), ctx.container.get(SyncRegistry), id);
-        ctx.body = { id, schedule, running: jobId !== undefined, ...stats };
+        // The library's asset count as pulled at the last sync's start (null until
+        // a sync has run); the UI uses it as the progress denominator so it doesn't
+        // climb while a first sync pages metadata in.
+        const libraryTotal = ctx.container.get(SyncProgressRegistry).libraryTotal(id) ?? null;
+        ctx.body = { id, schedule, running: jobId !== undefined, libraryTotal, ...stats };
     });
 
     router.get('/icloud/accounts/:accountId/photos', async ctx => {

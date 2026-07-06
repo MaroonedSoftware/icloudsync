@@ -15,6 +15,7 @@ import { ICloudConfig } from '../icloud/icloud.config.js';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { registerICloud } from '../icloud/icloud.module.js';
 import { registerPhotoSync, startSyncEngine, type SyncEngine } from '../icloud/sync/photo.sync.module.js';
+import { ImmichProbe } from '../icloud/storage/immich.probe.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { registerBodyParser } from './body.parser.js';
 import { HttpConfig } from './http.config.js';
@@ -114,6 +115,7 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
     registry.register(AccountsService).useInstance(new AccountsService(db));
+    registry.register(ImmichProbe).useInstance(new ImmichProbe());
     // The encrypted session lives on each account's row and the salt in app_settings
     // (no session volume needed); `storage`, when given, backs the photo archive.
     await registerICloud(registry, config, db, options.storage);

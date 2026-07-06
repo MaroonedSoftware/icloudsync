@@ -103,6 +103,13 @@ describe('api request shaping', () => {
         const [url, init] = spy.mock.calls[0]!;
         expect(url).toBe('/icloud/accounts/user%2Btag%40example.com/sync');
         expect((init as RequestInit).method).toBe('POST');
+        expect((init as RequestInit).body).toBe('{}');
+    });
+
+    it('sends the force flag in the sync body for a full re-sync', async () => {
+        const spy = stubFetch(fakeResponse({ status: 204 }));
+        await api.triggerSync('a@b.com', { force: true });
+        expect((spy.mock.calls[0]![1] as RequestInit).body).toBe('{"force":true}');
     });
 
     it('builds the photos query string only from provided params', async () => {
@@ -119,11 +126,11 @@ describe('api request shaping', () => {
 
     it('sends settings patches as a PATCH with a JSON body', async () => {
         const spy = stubFetch(fakeResponse({ json: async () => ({}) }));
-        await api.updateSettings({ photosLayout: 'date' });
+        await api.updateSettings({ syncCron: '0 3 * * *' });
         const [url, init] = spy.mock.calls[0]!;
         expect(url).toBe('/icloud/settings');
         expect((init as RequestInit).method).toBe('PATCH');
-        expect((init as RequestInit).body).toBe(JSON.stringify({ photosLayout: 'date' }));
+        expect((init as RequestInit).body).toBe(JSON.stringify({ syncCron: '0 3 * * *' }));
     });
 });
 

@@ -1,6 +1,7 @@
 import { ICloudClient } from '@icloudsync/icloud';
 import type { LoginResult, PhotosService, SessionStore, TwoFactorOptions } from '@icloudsync/icloud';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { defaultArchivePrefix } from './storage/photo.prefix.js';
 
 /** An account plus whether it currently has an authenticated session loaded. */
 export interface AccountStatus {
@@ -94,12 +95,13 @@ export class ICloudService {
 
     /**
      * The effective photo-archive path prefix for `accountId`: its custom
-     * `archive_prefix` when set, else the account id itself.
+     * `archive_prefix` when set, else the Apple ID's local part (see
+     * {@link defaultArchivePrefix}).
      */
     async archivePrefix(accountId: string): Promise<string> {
         const account = await this.accounts.getById(accountId);
         if (!account) throw new Error(`unknown account: ${accountId}`);
-        return account.archivePrefix ?? account.id;
+        return account.archivePrefix ?? defaultArchivePrefix(account);
     }
 
     /**

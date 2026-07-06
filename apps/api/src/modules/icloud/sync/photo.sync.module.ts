@@ -18,6 +18,7 @@ import { registerICloud } from '../icloud.module.js';
 import { PhotoArchive } from '../storage/photo.archive.js';
 import { PhotosRepository } from './photos.repository.js';
 import { SyncRegistry } from './sync.registry.js';
+import { SyncProgressRegistry } from './sync.progress.registry.js';
 import { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 import { SYNC_PHOTOS_JOB, SyncPhotosJob, type SyncPhotosPayload } from './sync.photos.job.js';
 import { SYNC_SWEEP_JOB, SweepPhotosJob } from './sync.dispatch.js';
@@ -43,6 +44,10 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
         .useFactory(() => new SyncRegistry())
         .asSingleton();
     registry
+        .register(SyncProgressRegistry)
+        .useFactory(() => new SyncProgressRegistry())
+        .asSingleton();
+    registry
         .register(RelocateRegistry)
         .useFactory(() => new RelocateRegistry())
         .asSingleton();
@@ -59,6 +64,7 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
                     container.get(SettingsService),
                     container.get(NotificationsService),
                     container.get(AccountsService),
+                    container.get(SyncProgressRegistry),
                 ),
         )
         .asSingleton();

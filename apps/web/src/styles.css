@@ -117,6 +117,16 @@ header.bar button.compact {
     border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
 }
 
+.badge.danger {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+}
+
+/* A checking badge's dot softly pulses while a probe is in flight. */
+.badge.checking .dot {
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
 .dot {
     width: 7px;
     height: 7px;
@@ -206,6 +216,13 @@ header.bar button.compact {
     min-width: 0;
 }
 
+.panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
 .pulse {
     color: var(--accent);
     animation: pulse 1.4s ease-in-out infinite;
@@ -265,6 +282,9 @@ label {
 
 input[type='text'],
 input[type='password'],
+input[type='url'],
+input[type='email'],
+input[type='number'],
 select {
     width: 100%;
     padding: 10px 12px;
