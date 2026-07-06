@@ -93,4 +93,70 @@ describe('ImmichClient', () => {
             });
         });
     });
+
+    describe('retry + timeout', () => {
+        const ok = new Response(JSON.stringify({ id: 'a', status: 'created' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        const upload = () => ({ deviceAssetId: 'r', filename: 'f', bytes, isFavorite: false });
+
+        it('retries a 429 and succeeds, honoring Retry-After', async () => {
+            const sleeps: number[] = [];
+            let n = 0;
+            const fetch: FetchLike = async () => (++n <= 2 ? new Response('slow', { status: 429, headers: { 'retry-after': '2' } }) : ok);
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { sleep: async ms => void sleeps.push(ms) });
+
+            expect(await client.upload(upload())).toEqual({ id: 'a', duplicate: false });
+            expect(n).toBe(3);
+            expect(sleeps).toEqual([2_000, 2_000]);
+        });
+
+        it('backs off exponentially when the server sends no Retry-After', async () => {
+            const sleeps: number[] = [];
+            let n = 0;
+            const albums = new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            const fetch: FetchLike = async () => (++n <= 3 ? new Response('', { status: 502 }) : albums);
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { sleep: async ms => void sleeps.push(ms) });
+
+            await client.listAlbums();
+            expect(sleeps).toEqual([1_000, 2_000, 4_000]);
+        });
+
+        it('gives up after maxRetries on a persistent 503', async () => {
+            let n = 0;
+            const fetch: FetchLike = async () => (n++, new Response('busy', { status: 503 }));
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { maxRetries: 2, sleep: async () => {} });
+
+            await expect(client.upload(upload())).rejects.toMatchObject({ status: 503 });
+            expect(n).toBe(3); // initial attempt + 2 retries
+        });
+
+        it('does not retry a permanent 401', async () => {
+            let n = 0;
+            const fetch: FetchLike = async () => (n++, new Response('nope', { status: 401 }));
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { sleep: async () => {} });
+
+            await expect(client.upload(upload())).rejects.toMatchObject({ status: 401 });
+            expect(n).toBe(1);
+        });
+
+        it('does not retry when maxRetries is 0', async () => {
+            let n = 0;
+            const fetch: FetchLike = async () => (n++, new Response('busy', { status: 503 }));
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { maxRetries: 0, sleep: async () => {} });
+
+            await expect(client.listAlbums()).rejects.toMatchObject({ status: 503 });
+            expect(n).toBe(1);
+        });
+
+        it('retries a network failure, then throws ImmichError once retries are exhausted', async () => {
+            let n = 0;
+            const fetch: FetchLike = async () => {
+                n++;
+                throw new Error('ECONNREFUSED');
+            };
+            const client = new ImmichClient('https://immich.test', 'k', 'dev', fetch, { maxRetries: 1, sleep: async () => {} });
+
+            await expect(client.ping()).rejects.toMatchObject({ status: 0, message: expect.stringContaining('ECONNREFUSED') });
+            expect(n).toBe(2); // initial attempt + 1 retry
+        });
+    });
 });

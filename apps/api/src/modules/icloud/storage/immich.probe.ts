@@ -25,7 +25,10 @@ export class ImmichProbe {
 
     /** Test a connection; never throws — a failure comes back as `{ ok: false, message }`. */
     async check(connection: ImmichConnection): Promise<ImmichCheckResult> {
-        const client = new ImmichClient(connection.baseUrl, connection.apiKey, 'icloudsync', this.fetchImpl);
+        // Interactive "Test connection": fail fast rather than resiliently. No
+        // retries and a short timeout so the settings UI gets an answer in
+        // seconds, not minutes, even against a wedged or throttling server.
+        const client = new ImmichClient(connection.baseUrl, connection.apiKey, 'icloudsync', this.fetchImpl, { maxRetries: 0, timeoutMs: 10_000 });
         try {
             await client.verify();
             return { ok: true };
