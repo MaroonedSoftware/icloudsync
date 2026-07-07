@@ -55,7 +55,18 @@ export function createApiApp(container: Container, options: CreateApiAppOptions 
 
     if (options.webRoot) app.use(staticSpa(options.webRoot, { passthroughPrefixes: ['/icloud'] }));
 
-    app.on('error', (error: unknown) => logger.error('http request failed', error));
+    // Koa emits 'error' for every thrown error, including the HttpErrors the
+    // middleware turns into responses. A 4xx is an expected client outcome (e.g. a
+    // 404 for a photo that isn't synced yet), not a server fault, so log those at
+    // debug and reserve error level for genuine 5xx / uncaught failures.
+    app.on('error', (error: unknown) => {
+        const status = (error as { statusCode?: unknown } | null)?.statusCode;
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+            logger.debug('http client error', error);
+        } else {
+            logger.error('http request failed', error);
+        }
+    });
     app.on('warn', (warning: unknown) => logger.warn('http request warning', warning));
 
     return app;

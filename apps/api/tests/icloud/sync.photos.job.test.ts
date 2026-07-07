@@ -110,6 +110,37 @@ function rateLimitedPhotos(count: number, failTimes: number, retryAfterMs?: numb
     return new PhotosService(requester);
 }
 
+/**
+ * A PhotosService that serves one asset per page keyed by `startRank` (asset `i`
+ * at rank `i`, up to `total`), throwing {@link RateLimitError} the *first* time it
+ * is asked for each rank in `throttleAtRanks`. Records every `startRank` it was
+ * queried with so a test can assert the walk resumed from the last flushed rank
+ * instead of restarting at 0.
+ */
+function resumablePhotos(total: number, throttleAtRanks: number[]): { photos: PhotosService; startRanks: number[] } {
+    const thrown = new Set<number>();
+    const startRanks: number[] = [];
+    const requester: ICloudRequester = {
+        serviceUrl: () => 'https://p01-ckdatabasews.icloud.com:443',
+        async request<T>(_u: string, _p: string, init?: RequestInit & { json?: unknown }): Promise<HttpResponse<T>> {
+            const body = init?.json as QueryBody & { batch?: unknown };
+            if (body.batch) return ok({ batch: [{ records: [{ fields: { itemCount: { value: total } } }] }] }) as HttpResponse<T>;
+            const { recordType, filterBy } = body.query;
+            if (recordType === 'CPLAlbumByPositionLive') return ok({ records: [] }) as HttpResponse<T>;
+            const startRank = Number(filterBy?.find(f => f.fieldName === 'startRank')?.fieldValue.value ?? 0);
+            startRanks.push(startRank);
+            if (throttleAtRanks.includes(startRank) && !thrown.has(startRank)) {
+                thrown.add(startRank);
+                throw new RateLimitError('rate limited', 429, 'slow down', 100);
+            }
+            if (startRank >= total) return ok({ records: [] }) as HttpResponse<T>;
+            return ok({ records: [assetRecord(startRank), masterRecord(startRank)] }) as HttpResponse<T>;
+        },
+        download: async () => new Uint8Array([1, 2, 3, 4]),
+    };
+    return { photos: new PhotosService(requester), startRanks };
+}
+
 class FakeStore implements PhotoStore {
     readonly batches: PhotoAsset[][] = [];
     readonly accounts: string[] = [];
@@ -599,6 +630,54 @@ describe('SyncPhotosJob', () => {
 
         expect(waits).toEqual([500]); // one wait, then the abort short-circuits the loop
         expect(arc.stored.size).toBe(0);
+    });
+
+    it('resumes paging from the last flushed rank after a rate limit, not from rank 0', async () => {
+        const store = new FakeStore();
+        const { photos, startRanks } = resumablePhotos(4, [2]); // throttle once, partway through
+        const src: PhotoSyncSource = {
+            isAuthenticated: () => true,
+            restoreAccount: async () => true,
+            photos: async () => photos,
+            download: async () => new Uint8Array([1, 2, 3, 4]),
+        };
+        const waits: number[] = [];
+        const job = new SyncPhotosJob(src, store, archive(), silentLogger, undefined, undefined, undefined, async ms => {
+            waits.push(ms);
+        });
+
+        await job.run({ batchSize: 1, pageSize: 1, metadataOnly: true, accountId: 'me@icloud.com' });
+
+        // All four assets land exactly once — the pass picked up where it stopped.
+        expect(store.batches.flat().map(a => a.recordName)).toEqual(['asset-0', 'asset-1', 'asset-2', 'asset-3']);
+        expect(waits).toEqual([100]); // one backoff
+        // Ranks 0 and 1 were paged once (before the throttle) and never re-queried;
+        // the resume restarted at rank 2, not 0.
+        expect(startRanks.filter(r => r === 0)).toHaveLength(1);
+        expect(startRanks.filter(r => r === 1)).toHaveLength(1);
+    });
+
+    it('keeps going across many rate limits as long as each resume makes progress', async () => {
+        const store = new FakeStore();
+        // Three throttles at advancing ranks — more than MAX_RATE_LIMIT_DEFERRALS.
+        // Without the progress-resets-the-budget rule the run would give up after 2.
+        const { photos } = resumablePhotos(5, [1, 2, 3]);
+        const src: PhotoSyncSource = {
+            isAuthenticated: () => true,
+            restoreAccount: async () => true,
+            photos: async () => photos,
+            download: async () => new Uint8Array([1, 2, 3, 4]),
+        };
+        const waits: number[] = [];
+        const job = new SyncPhotosJob(src, store, archive(), silentLogger, undefined, undefined, undefined, async ms => {
+            waits.push(ms);
+        });
+
+        await job.run({ batchSize: 1, pageSize: 1, metadataOnly: true, accountId: 'me@icloud.com' });
+
+        // Every asset synced, and three backoffs happened (budget kept resetting).
+        expect(store.batches.flat().map(a => a.recordName)).toEqual(['asset-0', 'asset-1', 'asset-2', 'asset-3', 'asset-4']);
+        expect(waits).toHaveLength(3);
     });
 
     it('stops downloading the rest of a batch once its signal is aborted mid-run', async () => {

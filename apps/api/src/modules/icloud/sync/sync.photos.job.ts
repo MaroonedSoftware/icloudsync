@@ -153,7 +153,10 @@ export interface PhotoSyncSource {
  * iCloud rate limiting (HTTP 429) is handled at two levels: the client retries
  * individual requests honoring `Retry-After`, and if a 429 still surfaces as a
  * {@link RateLimitError}, this job waits out the server-requested backoff (capped)
- * and resumes the pass. After {@link MAX_RATE_LIMIT_DEFERRALS} deferrals it stops
+ * and resumes paging from the last flushed rank rather than restarting the pass at
+ * rank 0. Each resume that makes forward progress resets the give-up budget, so a
+ * large first-time backup can span many short waits; only after
+ * {@link MAX_RATE_LIMIT_DEFERRALS} consecutive no-progress deferrals does it stop
  * cleanly, leaving the remainder for the next scheduled sweep rather than failing.
  *
  * Cancellation is cooperative: the runner passes an {@link AbortSignal} that is
@@ -239,19 +242,36 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         // Resolve how this account's photos are filed — only needed when backing
         // up bytes (a metadata-only run touches no destination).
         const destination = backupBytes ? await this.resolveDestination(accountId, payload) : undefined;
-        // One full pass over the library. Throws a RateLimitError (from paging,
-        // album resolution, or a download) when iCloud throttles us past the
-        // client's own 429 retries; the defer loop below waits it out and resumes.
-        // Idempotent, so a resumed pass skips already-archived originals.
+
+        // Album membership is resolved once and reused across rate-limit resumes:
+        // it doesn't change mid-run, and re-paging every album on each deferral
+        // would burn request budget and invite more throttling. Left undefined
+        // until the first pass builds it, so a 429 while building just retries.
+        let albums: Map<string, string> | undefined;
+
+        // Where the next pass resumes from. Advanced only past *fully-flushed*
+        // batches, so a rate-limit deferral picks up where the last one stopped
+        // instead of re-paging the whole library from rank 0. `total`/`archived`
+        // ride alongside as cumulative counters so the progress log keeps climbing
+        // across resumes rather than restarting from zero each pass.
+        let resumeRank = 0;
+        let total = 0;
+        let archived = 0;
+
+        // One pass over the remaining library, starting at `resumeRank`. Throws a
+        // RateLimitError (from paging, album resolution, or a download) when iCloud
+        // throttles us past the client's own 429 retries; the defer loop below waits
+        // it out and resumes from the last flushed rank. Idempotent, so a resumed
+        // pass skips already-archived originals.
         const runPass = async (): Promise<void> => {
-            // Resolve which album each asset belongs to up front when the destination
-            // needs it (album layout, XMP sidecars, or Immich album recreation).
-            const albums = backupBytes && destination && destinationNeedsAlbums(destination) ? await this.buildAlbumMap(photos) : new Map<string, string>();
-            const albumOf = (recordName: string): string | undefined => albums.get(recordName);
+            // Resolve which album each asset belongs to when the destination needs it
+            // (album layout / XMP sidecars), once, and reuse it on every resume.
+            if (albums === undefined) {
+                albums = backupBytes && destination && destinationNeedsAlbums(destination) ? await this.buildAlbumMap(photos) : new Map<string, string>();
+            }
+            const albumOf = (recordName: string): string | undefined => albums!.get(recordName);
 
             let batch: PhotoAsset[] = [];
-            let total = 0;
-            let archived = 0;
 
             const flush = async (): Promise<void> => {
                 if (batch.length === 0) return;
@@ -263,11 +283,18 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
                         if (await this.backup(accountId, prefix, asset, backedUp, destination!, albumOf, payload.force)) archived += 1;
                     }
                 }
+                // Advance the resume cursor only after the batch fully flushed
+                // (metadata *and* any downloads). A download that throws a rate limit
+                // leaves `resumeRank` at this batch's start, so the resumed pass
+                // re-fetches its un-archived originals rather than skipping them.
+                // The advance is by `batch.length` (ranks paged, duplicates included),
+                // which matches how the list generator moves its own rank cursor.
+                resumeRank += batch.length;
                 this.logger.info(`[${SYNC_PHOTOS_JOB}] ${total} synced, ${archived} archived for ${label}`);
                 batch = [];
             };
 
-            for await (const asset of photos.list(listOptions)) {
+            for await (const asset of photos.list({ ...listOptions, startRank: resumeRank })) {
                 if (signal?.aborted) break; // stop paging when cancelled
                 batch.push(asset);
                 if (batch.length >= batchSize) await flush();
@@ -283,24 +310,32 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
 
         // Wait out iCloud rate limiting rather than failing the run. When a 429
         // survives the client's retries, back off for the server-requested
-        // `Retry-After` (capped) and resume; after a few deferrals, stop cleanly
-        // and let the next scheduled sweep pick up the rest.
-        for (let deferrals = 0; ; deferrals += 1) {
+        // `Retry-After` (capped) and resume from the last flushed rank. The give-up
+        // budget counts only *consecutive* deferrals that made no forward progress:
+        // a resume that advanced the cursor resets it, so a large first-time backup
+        // can span many short waits, while a genuinely stuck run still bails and
+        // leaves the rest for the next scheduled sweep.
+        for (let noProgress = 0; ; ) {
+            const rankBefore = resumeRank;
             try {
                 await runPass();
                 return;
             } catch (error) {
                 if (!(error instanceof RateLimitError)) throw error;
                 if (signal?.aborted) return;
-                if (deferrals >= MAX_RATE_LIMIT_DEFERRALS) {
+                // A pass that advanced the cursor clears the no-progress tally, so a
+                // large backup can span many waits; only genuinely stuck runs count up.
+                if (resumeRank > rankBefore) noProgress = 0;
+                if (noProgress >= MAX_RATE_LIMIT_DEFERRALS) {
                     this.logger.warn(
-                        `[${SYNC_PHOTOS_JOB}] ${label} still rate limited by iCloud after ${deferrals} deferrals; leaving the rest for the next scheduled sync`,
+                        `[${SYNC_PHOTOS_JOB}] ${label} still rate limited by iCloud after ${noProgress} deferrals with no progress; leaving the rest for the next scheduled sync`,
                     );
                     return;
                 }
+                noProgress += 1;
                 const waitMs = Math.min(error.retryAfterMs ?? DEFAULT_RATE_LIMIT_WAIT_MS, MAX_RATE_LIMIT_WAIT_MS);
                 this.logger.warn(
-                    `[${SYNC_PHOTOS_JOB}] ${label} rate limited by iCloud; waiting ${Math.round(waitMs / 1000)}s before resuming (deferral ${deferrals + 1}/${MAX_RATE_LIMIT_DEFERRALS})`,
+                    `[${SYNC_PHOTOS_JOB}] ${label} rate limited by iCloud; waiting ${Math.round(waitMs / 1000)}s before resuming from rank ${resumeRank} (deferral ${noProgress}/${MAX_RATE_LIMIT_DEFERRALS})`,
                 );
                 await this.wait(waitMs, signal);
                 if (signal?.aborted) return;

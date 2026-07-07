@@ -141,4 +141,61 @@ describe('PhotosService', () => {
         };
         await expect(new PhotosService(requester).getAlbums()).rejects.toThrow(/not authenticated/);
     });
+
+    /** A requester that returns list-query pages from a scripted queue, in order. */
+    function scriptedRequester(pages: Array<{ records: unknown[]; continuationMarker?: unknown }>): ICloudRequester {
+        let next = 0;
+        return {
+            serviceUrl: name => (name === 'ckdatabasews' ? 'https://p01-ckdatabasews.icloud.com:443' : undefined),
+            async request<T>(_url: string, pathname: string): Promise<HttpResponse<T>> {
+                if (!pathname.includes('records/query')) return ok({ records: [] }) as HttpResponse<T>;
+                return ok(pages[next++] ?? { records: [] }) as HttpResponse<T>;
+            },
+            async download() {
+                return new Uint8Array();
+            },
+        };
+    }
+
+    it('retries the same rank on a transient empty page that still advertises more', async () => {
+        // A blip mid-library: an empty page that still carries a continuationMarker
+        // must NOT end the walk — the same rank is retried and the later asset found.
+        const photos = new PhotosService(
+            scriptedRequester([
+                { records: [assetRecord('asset-1', 'master-1', 'first.jpg', false), masterRecord('master-1')] },
+                { records: [], continuationMarker: 'more' }, // transient empty
+                { records: [assetRecord('asset-2', 'master-2', 'second.jpg', false), masterRecord('master-2')] },
+                { records: [] }, // true end: empty, no marker
+            ]),
+        );
+
+        const assets = await photos.listAll({ pageSize: 1 });
+        expect(assets.map(a => a.filename)).toEqual(['first.jpg', 'second.jpg']);
+    });
+
+    it('stops after a bounded number of empty retries when the marker lingers', async () => {
+        // If CloudKit keeps returning empty+marker past the true end, the walk must
+        // still terminate (bounded retries) rather than loop forever.
+        const pages = [
+            { records: [assetRecord('asset-1', 'master-1', 'first.jpg', false), masterRecord('master-1')] },
+            ...Array.from({ length: 20 }, () => ({ records: [] as unknown[], continuationMarker: 'more' })),
+        ];
+        const photos = new PhotosService(scriptedRequester(pages));
+
+        const assets = await photos.listAll({ pageSize: 1 });
+        expect(assets.map(a => a.filename)).toEqual(['first.jpg']);
+    });
+
+    it('stops immediately on an empty page with no continuation marker', async () => {
+        const photos = new PhotosService(
+            scriptedRequester([
+                { records: [assetRecord('asset-1', 'master-1', 'first.jpg', false), masterRecord('master-1')] },
+                { records: [] }, // no marker → done
+                { records: [assetRecord('asset-2', 'master-2', 'unreached.jpg', false), masterRecord('master-2')] },
+            ]),
+        );
+
+        const assets = await photos.listAll({ pageSize: 1 });
+        expect(assets.map(a => a.filename)).toEqual(['first.jpg']);
+    });
 });

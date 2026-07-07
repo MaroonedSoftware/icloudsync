@@ -18,6 +18,14 @@ const DEFAULT_ZONE = 'PrimarySync';
 const DEFAULT_INDEX = 'CPLAssetAndMasterByAssetDateWithoutHiddenOrDeleted';
 /** Index used to *count* assets (asset-only `obj_type`, no `AndMaster`). */
 const DEFAULT_COUNT_INDEX = 'CPLAssetByAssetDateWithoutHiddenOrDeleted';
+/**
+ * How many times {@link PhotosService.list} re-queries the *same* rank after an
+ * empty page that still advertises more via `continuationMarker`, before treating
+ * the library as exhausted. Guards against a transient empty window under load
+ * silently truncating a sync, while the cap keeps a lingering marker from looping
+ * forever past the true end.
+ */
+const MAX_EMPTY_PAGE_RETRIES = 3;
 
 /** The minimal authenticated-client surface the Photos service needs. */
 export interface ICloudRequester {
@@ -204,9 +212,12 @@ export class PhotosService {
     }
 
     /**
-     * Lazily page through the library, yielding one {@link PhotoAsset} per
-     * master record. Advances `startRank` by the number of masters per page and
-     * stops on the first empty page.
+     * Lazily page through the library, yielding one {@link PhotoAsset} per master
+     * record. Advances `startRank` by the number of masters per page. Stops when a
+     * page comes back empty *and* CloudKit no longer advertises more results via
+     * `continuationMarker`; an empty page that still carries a marker is treated as
+     * a transient blip and the same rank is retried (bounded by
+     * {@link MAX_EMPTY_PAGE_RETRIES}) rather than ending the walk early.
      */
     async *list(options: ListOptions = {}): AsyncGenerator<PhotoAsset> {
         const direction = options.direction ?? 'ASCENDING';
@@ -219,6 +230,7 @@ export class PhotosService {
                   ? 'CPLAssetAndMasterInSmartAlbumByAssetDate'
                   : DEFAULT_INDEX);
         let offset = options.startRank ?? 0;
+        let emptyRetries = 0;
 
         for (;;) {
             const filterBy: Array<Record<string, unknown>> = [
@@ -235,7 +247,7 @@ export class PhotosService {
             // NOTE: no `desiredKeys` — restricting fields makes CloudKit return only
             // CPLAsset records (no CPLMaster), which breaks the master/asset pairing.
             // Request all fields so both record types come back.
-            const data = await this.query<{ records?: CloudKitRecord[] }>('records/query', {
+            const data = await this.query<{ records?: CloudKitRecord[]; continuationMarker?: unknown }>('records/query', {
                 query: { recordType, filterBy },
                 resultsLimit: pageSize * 2,
                 zoneID: { zoneName: this.zoneName },
@@ -243,7 +255,19 @@ export class PhotosService {
 
             const records = data.records ?? [];
             const masters = records.filter(r => r.recordType === 'CPLMaster');
-            if (masters.length === 0) break;
+            if (masters.length === 0) {
+                // A genuinely exhausted index returns no records and no
+                // `continuationMarker`. Under load CloudKit can instead hand back a
+                // transient empty window mid-library while still advertising more via
+                // the marker; retry the *same* rank a bounded number of times before
+                // concluding the library is done, so a blip doesn't silently truncate
+                // the sync. Re-querying the same offset never skips ranks, and the cap
+                // stops a marker that lingers past the true end from looping forever.
+                if (data.continuationMarker === undefined || emptyRetries >= MAX_EMPTY_PAGE_RETRIES) break;
+                emptyRetries += 1;
+                continue;
+            }
+            emptyRetries = 0;
 
             const assetsByMaster = new Map<string, CloudKitRecord>();
             for (const record of records) {
