@@ -33,7 +33,6 @@ export interface IcloudAccounts {
   addedAt: Generated<DateTime>;
   archivePrefix: string | null;
   id: Generated<string>;
-  photosDestination: string | null;
   photosLayout: string | null;
   photosNaming: string | null;
   photosPreset: string | null;
@@ -49,7 +48,6 @@ export interface IcloudPhotos {
   assetDate: bigint | null;
   backedUpAt: DateTime | null;
   backupChecksum: string | null;
-  backupDestination: string | null;
   backupKey: string | null;
   backupSize: bigint | null;
   filename: string | null;

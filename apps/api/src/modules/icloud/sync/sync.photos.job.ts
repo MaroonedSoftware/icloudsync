@@ -2,24 +2,19 @@ import { Job } from '@maroonedsoftware/jobbroker';
 import { Logger } from '@maroonedsoftware/logger';
 import { RateLimitError } from '@icloudsync/icloud';
 import type { ListOptions, PhotoAsset, PhotoResource, PhotosService, SmartAlbum, SortDirection } from '@icloudsync/icloud';
-import { SettingsService } from '../../settings/settings.service.js';
 import { PhotoArchive } from '../storage/photo.archive.js';
 import { layoutGroup, type PhotoLayout } from '../storage/photo.layout.js';
 import { namingLeaf, shortHash, withSuffix, type PhotoNaming } from '../storage/photo.naming.js';
 import {
-    DEFAULT_DESTINATION_KIND,
     DEFAULT_FILESYSTEM_PRESET,
     destinationNeedsAlbums,
     filesystemDestination,
-    immichDestination,
     PRESET_MECHANICS,
     type Destination,
-    type DestinationKind,
     type FilesystemPreset,
 } from '../storage/photo.destination.js';
 import { defaultArchivePrefix } from '../storage/photo.prefix.js';
 import { buildSidecar, sidecarKey } from '../storage/photo.sidecar.js';
-import { ImmichUploader } from '../storage/immich.uploader.js';
 import { SyncProgressRegistry } from './sync.progress.registry.js';
 import type { BackedUpAsset, PhotoStore } from './photos.repository.js';
 
@@ -80,9 +75,9 @@ export interface SyncPhotosPayload {
     metadataOnly?: boolean;
     /**
      * Force a full re-sync: re-download and re-store every asset's bytes even when
-     * an up-to-date backup is already recorded (default false). Use to rebuild a
-     * destination from scratch. Idempotent — filesystem copies overwrite in place
-     * and Immich dedupes by checksum — so it re-does work without duplicating it.
+     * an up-to-date backup is already recorded (default false). Use to rebuild the
+     * archive from scratch. Idempotent — copies overwrite in place — so it re-does
+     * work without duplicating it.
      */
     force?: boolean;
     /** Override the on-disk organization for this run (defaults to the account override, else the built-in layout). */
@@ -111,8 +106,8 @@ export interface AccountRef {
 export interface AccountSource {
     /** The account's identity + storage config, or `undefined` if it is gone. */
     getById(id: string): Promise<AccountRef | undefined>;
-    /** An account's destination + layout/naming overrides (`null` fields fall back to the built-in default). */
-    photoSettings(id: string): Promise<{ destination: DestinationKind | null; preset: FilesystemPreset | null; layout: PhotoLayout | null; naming: PhotoNaming | null }>;
+    /** An account's preset + layout/naming overrides (`null` fields fall back to the built-in default). */
+    photoSettings(id: string): Promise<{ preset: FilesystemPreset | null; layout: PhotoLayout | null; naming: PhotoNaming | null }>;
 }
 
 /**
@@ -174,7 +169,6 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         private readonly store: PhotoStore,
         private readonly archive: PhotoArchive,
         private readonly logger: Logger,
-        private readonly settings: SettingsService,
         /** Alerts the admin when an account needs re-authentication. Optional (notifications may be off). */
         private readonly notifications?: ReauthReporter,
         /** Resolves the Apple ID, archive prefix, and layout/naming overrides. Optional; when absent the account id is used as the label/prefix and every account falls back to the built-in default (with a source present, an unpinned prefix defaults to the Apple ID's local part). */
@@ -183,9 +177,6 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         private readonly progress?: SyncProgressRegistry,
         /** Sleep between rate-limit deferrals; injectable so tests need not wait on real timers. */
         private readonly wait: (ms: number, signal?: AbortSignal) => Promise<void> = delay,
-        /** Builds the Immich uploader for an Immich destination; injectable so tests can stub the API. */
-        private readonly immichFor: (dest: Extract<Destination, { kind: 'immich' }>, deviceId: string) => ImmichUploader = (dest, deviceId) =>
-            ImmichUploader.create(dest, deviceId),
     ) {
         super();
     }
@@ -245,17 +236,9 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         // (or a smart-album run, whose total wouldn't match the whole-library count)
         // just leaves it unset, and the UI falls back to the rows-synced count.
         await this.recordLibraryTotal(accountId, label, photos, payload);
-        // Resolve where this account's photos go — only needed when backing up
-        // bytes (a metadata-only run touches no destination). A byte-backup run
-        // routed to Immich with no server configured has nothing to write, so
-        // it's skipped with a clear warning rather than failing the queue.
+        // Resolve how this account's photos are filed — only needed when backing
+        // up bytes (a metadata-only run touches no destination).
         const destination = backupBytes ? await this.resolveDestination(accountId, payload) : undefined;
-        if (backupBytes && !destination) {
-            this.logger.warn(`[${SYNC_PHOTOS_JOB}] ${label} is set to upload to Immich, but no Immich server is configured in settings; skipping`);
-            return;
-        }
-        // For the Immich destination, an uploader holds the connection + album cache for this run.
-        const uploader = destination?.kind === 'immich' ? this.immichFor(destination, accountId) : undefined;
         // One full pass over the library. Throws a RateLimitError (from paging,
         // album resolution, or a download) when iCloud throttles us past the
         // client's own 429 retries; the defer loop below waits it out and resumes.
@@ -276,8 +259,8 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
                 if (backupBytes) {
                     for (const asset of batch) {
                         if (signal?.aborted) break; // stop downloading mid-batch when cancelled
-                        // `destination` is always set here: the early return above bails out of any byte-backup run without one.
-                        if (await this.backup(accountId, prefix, asset, backedUp, destination!, albumOf, uploader, payload.force)) archived += 1;
+                        // `destination` is always set here: it's resolved above for every byte-backup run.
+                        if (await this.backup(accountId, prefix, asset, backedUp, destination!, albumOf, payload.force)) archived += 1;
                     }
                 }
                 this.logger.info(`[${SYNC_PHOTOS_JOB}] ${total} synced, ${archived} archived for ${label}`);
@@ -344,22 +327,13 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
     }
 
     /**
-     * Resolve the effective backup destination for this run, or `undefined` when
-     * the account routes to Immich but no Immich server is configured (the caller
-     * skips the run in that case). The destination kind (filesystem vs Immich) and
-     * the filesystem preset are per-account choices; for a filesystem preset the
-     * layout/naming resolve most-specific first (per-run payload override, else the
-     * account's own override, else the preset's baseline). The preset still
-     * dictates XMP-sidecar behavior. Immich pulls its connection from the global
-     * settings and ignores layout/naming entirely.
+     * Resolve the effective backup destination for this run. The filesystem preset
+     * is a per-account choice; its layout/naming resolve most-specific first
+     * (per-run payload override, else the account's own override, else the preset's
+     * baseline). The preset also dictates XMP-sidecar behavior.
      */
-    private async resolveDestination(accountId: string, payload: SyncPhotosPayload): Promise<Destination | undefined> {
-        const override = (await this.accounts?.photoSettings(accountId)) ?? { destination: null, preset: null, layout: null, naming: null };
-        const kind = override.destination ?? DEFAULT_DESTINATION_KIND;
-        if (kind === 'immich') {
-            const connection = await this.settings.immich();
-            return connection ? immichDestination(connection) : undefined;
-        }
+    private async resolveDestination(accountId: string, payload: SyncPhotosPayload): Promise<Destination> {
+        const override = (await this.accounts?.photoSettings(accountId)) ?? { preset: null, layout: null, naming: null };
         const preset = override.preset ?? DEFAULT_FILESYSTEM_PRESET;
         const baseline = PRESET_MECHANICS[preset];
         const layout = payload.layout ?? override.layout ?? baseline.layout;
@@ -368,12 +342,9 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
     }
 
     /**
-     * Download and back up an asset's original bytes unless an up-to-date copy for
-     * this same destination already exists. The skip is destination-aware: a copy
-     * recorded for a different destination (e.g. the filesystem archive, when the
-     * account has since switched to Immich) does not count as done, so switching
-     * destinations re-runs the backup. `force` bypasses the skip entirely for a full
-     * re-sync. Returns whether it stored anything.
+     * Download and back up an asset's original bytes unless an up-to-date copy
+     * already exists. `force` bypasses the skip entirely for a full re-sync.
+     * Returns whether it stored anything.
      */
     private async backup(
         accountId: string,
@@ -382,7 +353,6 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         backedUp: Map<string, BackedUpAsset>,
         destination: Destination,
         albumOf: (recordName: string) => string | undefined,
-        uploader?: ImmichUploader,
         force?: boolean,
     ): Promise<boolean> {
         const original = pickOriginal(asset);
@@ -390,21 +360,15 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
 
         const checksum = original.fileChecksum ?? null;
         const existing = backedUp.get(asset.recordName);
-        // Skip only an up-to-date copy that went to *this* destination; a mismatch
-        // (or an unknown/null destination on a pre-migration row) re-runs the backup.
-        if (!force && existing && existing.checksum === checksum && existing.destination === destination.kind) return false;
+        // Skip an up-to-date copy; a checksum mismatch re-runs the backup.
+        if (!force && existing && existing.checksum === checksum) return false;
 
         try {
             const bytes = await this.icloud.download(accountId, original.downloadURL);
-            // The recorded backup key is either a storage key (filesystem) or the
-            // Immich asset id — either way it's what a re-sync checks to skip work.
-            const key =
-                destination.kind === 'immich'
-                    ? await this.uploadToImmich(asset, bytes, original.fileType, albumOf, uploader)
-                    : await this.archiveToDisk(prefix, asset, bytes, original.fileType, destination, albumOf, existing?.key ?? null);
+            const key = await this.archiveToDisk(prefix, asset, bytes, original.fileType, destination, albumOf, existing?.key ?? null);
             if (key === null) return false;
-            await this.store.markBackedUp(accountId, asset.recordName, { key, size: bytes.byteLength, checksum, destination: destination.kind });
-            backedUp.set(asset.recordName, { checksum, key, destination: destination.kind });
+            await this.store.markBackedUp(accountId, asset.recordName, { key, size: bytes.byteLength, checksum });
+            backedUp.set(asset.recordName, { checksum, key });
             return true;
         } catch (error) {
             // Rate limiting is a whole-run condition, not a per-asset one: let it
@@ -421,7 +385,7 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         asset: PhotoAsset,
         bytes: Uint8Array,
         contentType: string | undefined,
-        destination: Extract<Destination, { kind: 'filesystem' }>,
+        destination: Destination,
         albumOf: (recordName: string) => string | undefined,
         recordedKey: string | null,
     ): Promise<string> {
@@ -431,19 +395,6 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         await this.archive.store(key, bytes, contentType);
         if (destination.sidecars) await this.writeSidecar(key, asset, albumOf);
         return key;
-    }
-
-    /** Upload bytes into Immich (favorite + album reconciled by the uploader). Returns the Immich asset id, or `null` if no uploader is wired. */
-    private async uploadToImmich(
-        asset: PhotoAsset,
-        bytes: Uint8Array,
-        contentType: string | undefined,
-        albumOf: (recordName: string) => string | undefined,
-        uploader?: ImmichUploader,
-    ): Promise<string | null> {
-        if (!uploader) return null;
-        const result = await uploader.backup(asset, bytes, contentType, albumOf(asset.recordName));
-        return result.id;
     }
 
     /**

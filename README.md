@@ -35,33 +35,32 @@ re-fetched only when its checksum changes, so re-runs resume rather than redo.
 The download proxy serves the archived copy when present and falls back to a live
 iCloud fetch otherwise.
 
-**Where photos go** is one setting — a *destination* — edited in the UI. Rather
-than exposing raw folder/filename knobs, you pick an intent:
+**How photos are organized** on the filesystem archive is one setting — a
+*preset* — edited in the UI. Rather than exposing raw folder/filename knobs, you
+pick an intent:
 
-| Destination | What it does |
+| Preset | What it does |
 |---|---|
-| **Filesystem → Immich-ready** (default preset) | Flat archive, original filenames, plus an XMP sidecar (`<file>.xmp`) per favorite/album photo carrying its favorite rating and album membership. Optimized for an Immich **external library** mounted read-only over the archive — Immich builds the timeline from each file's own EXIF, so folders are left flat on purpose. |
-| **Filesystem → Browsable archive** | A `YYYY/YYYY-MM` date tree with original filenames, for browsing the raw files yourself. |
-| **Immich (API upload)** | Uploads each asset straight into an Immich server via its API (`baseUrl` + `apiKey`). Immich owns storage — it dedupes by checksum, so re-syncs are cheap — and iCloud albums/favorites are reconciled as Immich albums/favorites (both toggleable). No layout/naming applies. |
+| **Immich-ready** (default) | Flat archive, original filenames, plus an XMP sidecar (`<file>.xmp`) per favorite/album photo carrying its favorite rating and album membership. Optimized for an Immich **external library** mounted read-only over the archive — Immich builds the timeline from each file's own EXIF, so folders are left flat on purpose. |
+| **Browsable archive** | A `YYYY/YYYY-MM` date tree with original filenames, for browsing the raw files yourself. |
 
-Each filesystem preset is a **baseline**: its `photos_layout` (`flat` \| `date` \|
+Each preset is a **baseline**: its `photos_layout` (`flat` \| `date` \|
 `album`) and `photos_naming` (`clean` \| `datetime` \| `hash`) can be overridden
 **per account** from each account's dashboard (or `PATCH
 /icloud/accounts/:accountId/settings`). An unset override inherits the active
 preset's baseline (Immich-ready → `flat`/`clean`, Browsable → `date`/`clean`),
 resolving most-specific first (per-run payload override → account override →
 preset baseline). XMP sidecars always follow the preset (Immich-ready on,
-Browsable off). The Immich API destination owns organization, so per-account
-layout/naming don't apply there.
+Browsable off).
 
-For the filesystem archive, files land directly in their layout folder (no
-per-photo id sub-folder) so it stays browsable, and all three naming schemes are
-collision-safe (the `~<hash>` suffix is derived from the photo's stable record id,
-so re-syncs stay idempotent). Album resolution (for the `album` layout, XMP
-sidecars, or Immich album recreation) pages each iCloud album, first album wins,
-and degrades to `Unsorted`/no-album rather than failing the backup.
+Files land directly in their layout folder (no per-photo id sub-folder) so the
+archive stays browsable, and all three naming schemes are collision-safe (the
+`~<hash>` suffix is derived from the photo's stable record id, so re-syncs stay
+idempotent). Album resolution (for the `album` layout or XMP sidecars) pages each
+iCloud album, first album wins, and degrades to `Unsorted`/no-album rather than
+failing the backup.
 - **`apps/web`** — React + Vite SPA: sign-in (password + device/SMS 2FA), a
-  stats dashboard, recent backups, and a settings panel (destination, schedule).
+  stats dashboard, recent backups, and a settings panel (preset, schedule).
 
 ### Configuration model
 
@@ -119,13 +118,12 @@ Secrets + infra only; everything user-facing is a DB setting (see above).
 The container also serves `GET /health` — a DB-backed readiness probe (`200`
 when Postgres answers, `503` otherwise) wired to the image's Docker `HEALTHCHECK`.
 
-Database-backed global settings (UI / `PATCH /icloud/settings`):
-`photos_destination` (a filesystem preset or Immich config) and `sync_cron`.
-Each account is a row in `icloud_accounts` keyed by an auto-generated UUID (the
-Apple ID is a unique attribute); its encrypted session lives on that row (the
-`session` column), the Argon2id salt in `app_settings`, and its per-account
-`photos_layout` / `photos_naming` overrides (which override the active
-filesystem preset's baseline) on the same row. Only the photo bytes use a volume, so a
+Database-backed global settings (UI / `PATCH /icloud/settings`): `sync_cron` and
+the admin notification config. Each account is a row in `icloud_accounts` keyed by
+an auto-generated UUID (the Apple ID is a unique attribute); its encrypted session
+lives on that row (the `session` column), the Argon2id salt in `app_settings`, and
+its per-account `photos_preset` / `photos_layout` / `photos_naming` overrides
+(which override the active filesystem preset's baseline) on the same row. Only the photo bytes use a volume, so a
 deployment needs just `DATABASE_URL` + `ICLOUD_ENCRYPTION_SECRET`.
 
 ## Run on Unraid

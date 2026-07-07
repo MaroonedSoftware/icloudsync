@@ -47,20 +47,20 @@ describe('AccountsService photo overrides (integration)', () => {
         const id = await accounts.create(ACCOUNT);
 
         // A fresh account inherits everything.
-        expect(await accounts.photoSettings(id)).toEqual({ destination: null, preset: null, layout: null, naming: null });
+        expect(await accounts.photoSettings(id)).toEqual({ preset: null, layout: null, naming: null });
 
-        // Pin the destination/preset and the layout; naming stays inherited.
-        await accounts.setPhotoSettings(id, { destination: 'immich', preset: 'browsable', layout: 'date' });
-        expect(await accounts.photoSettings(id)).toEqual({ destination: 'immich', preset: 'browsable', layout: 'date', naming: null });
+        // Pin the preset and the layout; naming stays inherited.
+        await accounts.setPhotoSettings(id, { preset: 'browsable', layout: 'date' });
+        expect(await accounts.photoSettings(id)).toEqual({ preset: 'browsable', layout: 'date', naming: null });
 
         // Pin naming too (a fresh instance proves it's persisted, not in-memory).
         await accounts.setPhotoSettings(id, { naming: 'hash' });
         const fresh = new AccountsService(db);
-        expect(await fresh.photoSettings(id)).toEqual({ destination: 'immich', preset: 'browsable', layout: 'date', naming: 'hash' });
+        expect(await fresh.photoSettings(id)).toEqual({ preset: 'browsable', layout: 'date', naming: 'hash' });
 
-        // Clearing the destination and layout leaves the rest intact.
-        await accounts.setPhotoSettings(id, { destination: null, layout: null });
-        expect(await fresh.photoSettings(id)).toEqual({ destination: null, preset: 'browsable', layout: null, naming: 'hash' });
+        // Clearing the layout leaves the rest intact.
+        await accounts.setPhotoSettings(id, { layout: null });
+        expect(await fresh.photoSettings(id)).toEqual({ preset: 'browsable', layout: null, naming: 'hash' });
     });
 
     it('reads an unknown account as fully inherited', async () => {
@@ -68,6 +68,6 @@ describe('AccountsService photo overrides (integration)', () => {
             console.warn('[accounts.settings.int] skipped — Postgres unreachable');
             return;
         }
-        expect(await accounts.photoSettings('00000000-0000-4000-8000-000000000000')).toEqual({ destination: null, preset: null, layout: null, naming: null });
+        expect(await accounts.photoSettings('00000000-0000-4000-8000-000000000000')).toEqual({ preset: null, layout: null, naming: null });
     });
 });

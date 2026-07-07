@@ -95,6 +95,30 @@ describe('PhotosRepository (integration)', () => {
         expect(Number(count.n)).toBe(2);
     });
 
+    it('dedupes duplicate record names within a batch, keeping the last occurrence', async () => {
+        if (!available || !db) {
+            console.warn('[photos.repository.int] skipped — Postgres unreachable');
+            return;
+        }
+        await db.deleteFrom('icloudPhotos').where('accountId', '=', accountId).execute();
+
+        // iCloud paging can surface the same recordName twice in one batch. Postgres
+        // rejects an ON CONFLICT DO UPDATE that touches the same row twice, so the
+        // batch must collapse to one row per record before the insert runs.
+        const written = await repo.upsertBatch(accountId, [
+            asset('dup', true, 'first.jpg'),
+            asset('other', false, 'other.jpg'),
+            asset('dup', false, 'last.jpg'),
+        ]);
+        expect(written).toBe(2); // 3 in, 1 collapsed
+
+        const rows = await db.selectFrom('icloudPhotos').selectAll().where('accountId', '=', accountId).orderBy('recordName').execute();
+        expect(rows.map(r => r.recordName)).toEqual(['dup', 'other']);
+        const dup = rows.find(r => r.recordName === 'dup')!;
+        expect(dup.filename).toBe('last.jpg'); // last occurrence wins
+        expect(dup.isFavorite).toBe(false);
+    });
+
     it('lists and reads back synced photos with normalised dates', async () => {
         if (!available || !db) {
             console.warn('[photos.repository.int] skipped — Postgres unreachable');

@@ -1,25 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type AccountSettings, type DestinationKind, type FilesystemPreset, type PhotoLayout, type PhotoNaming } from '../api.js';
+import { api, type AccountSettings, type FilesystemPreset, type PhotoLayout, type PhotoNaming } from '../api.js';
 import { LAYOUTS, NAMINGS, PRESETS } from './Settings.js';
 
 // How often to re-check whether a prefix change's file move has finished.
 const RELOCATE_POLL_MS = 3000;
 
-/**
- * The per-account "where photos go" options: each filesystem preset (from the
- * shared PRESETS list) plus an Immich upload. Encoded as `filesystem:<preset>` or
- * `immich` so the single dropdown maps cleanly to the destination + preset fields.
- */
-type DestinationChoice = `filesystem:${FilesystemPreset}` | 'immich';
-const DESTINATION_OPTIONS: { value: DestinationChoice; label: string; hint: string }[] = [
-    ...PRESETS.map(p => ({ value: `filesystem:${p.value}` as DestinationChoice, label: p.label, hint: p.hint })),
-    {
-        value: 'immich',
-        label: 'Immich (upload via API)',
-        hint: 'Upload each photo to the Immich server configured in Settings. Immich owns storage, dedupes by checksum, and builds the timeline from metadata.',
-    },
-];
-const choiceHint = (v: DestinationChoice): string => DESTINATION_OPTIONS.find(o => o.value === v)?.hint ?? '';
+/** The hint shown under the preset dropdown for the selected preset. */
+const presetHint = (v: FilesystemPreset): string => PRESETS.find(p => p.value === v)?.hint ?? '';
 
 /**
  * Per-account setting for the on-disk organization (layout + file naming). Each
@@ -31,7 +18,6 @@ const choiceHint = (v: DestinationChoice): string => DESTINATION_OPTIONS.find(o 
  */
 export function AccountStorage({ accountId, onChange }: { accountId: string; onChange?: () => void }) {
     const [settings, setSettings] = useState<AccountSettings>();
-    const [destination, setDestination] = useState<DestinationKind>('filesystem');
     const [preset, setPreset] = useState<FilesystemPreset>('immich');
     const [layout, setLayout] = useState<PhotoLayout | null>(null);
     const [naming, setNaming] = useState<PhotoNaming | null>(null);
@@ -46,9 +32,8 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
 
     const apply = (s: AccountSettings) => {
         setSettings(s);
-        // An unset destination/preset override shows the built-in default (so the
-        // dropdown always reflects a real value); picking anything pins it.
-        setDestination(s.photosDestination ?? s.defaults.photosDestination);
+        // An unset preset override shows the built-in default (so the dropdown
+        // always reflects a real value); picking anything pins it.
         setPreset(s.photosPreset ?? s.defaults.photosPreset);
         setLayout(s.photosLayout);
         setNaming(s.photosNaming);
@@ -97,25 +82,12 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
             setSaved(false);
         };
 
-    // Map the single "where photos go" dropdown back onto the destination + preset fields.
-    const chooseDestination = (choice: DestinationChoice) => {
-        setDirty(true);
-        setSaved(false);
-        if (choice === 'immich') {
-            setDestination('immich');
-        } else {
-            setDestination('filesystem');
-            setPreset(choice.slice('filesystem:'.length) as FilesystemPreset);
-        }
-    };
-
     const save = async () => {
         setSaving(true);
         setError(undefined);
         try {
             apply(
                 await api.updateAccountSettings(accountId, {
-                    photosDestination: destination,
                     photosPreset: preset,
                     photosLayout: layout,
                     photosNaming: naming,
@@ -149,11 +121,6 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
 
     const loaded = settings !== undefined;
     const defaults = settings?.defaults;
-    // Per-account layout/naming overrides apply under any filesystem preset; Immich owns organization.
-    const isFilesystem = destination === 'filesystem';
-    const destValue: DestinationChoice = destination === 'immich' ? 'immich' : `filesystem:${preset}`;
-    // Warn when this account routes to Immich but no Immich server is configured in Settings.
-    const immichMissing = destination === 'immich' && settings !== undefined && !settings.immichConfigured;
 
     return (
         <div className="card">
@@ -162,23 +129,20 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
                 {relocating ? <span className="pulse">Moving files…</span> : saved && !dirty && <span className="muted">Saved</span>}
             </div>
             <p className="muted" style={{ marginTop: -4 }}>
-                Choose where this account's photos go and how they're organized, or use the defaults. Applies to newly synced photos.
+                Choose how this account's photos are organized on disk, or use the defaults. Applies to newly synced photos.
             </p>
 
             {error && <div className="error">{error}</div>}
 
-            <label htmlFor="acct-destination">Where photos go</label>
-            <select id="acct-destination" value={destValue} disabled={!loaded} onChange={e => chooseDestination(e.target.value as DestinationChoice)}>
-                {DESTINATION_OPTIONS.map(o => (
-                    <option key={o.value} value={o.value}>
-                        {o.label}
+            <label htmlFor="acct-preset">How photos are organized</label>
+            <select id="acct-preset" value={preset} disabled={!loaded} onChange={e => edit(setPreset)(e.target.value as FilesystemPreset)}>
+                {PRESETS.map(p => (
+                    <option key={p.value} value={p.value}>
+                        {p.label}
                     </option>
                 ))}
             </select>
-            <p className="muted" style={{ marginTop: -6, fontSize: '0.85em' }}>{choiceHint(destValue)}</p>
-            {immichMissing && (
-                <div className="error">No Immich server is configured. Add one in Settings before syncing this account, or its backups will be skipped.</div>
-            )}
+            <p className="muted" style={{ marginTop: -6, fontSize: '0.85em' }}>{presetHint(preset)}</p>
 
             {!relocating && relocationError && (
                 <div className="error">
@@ -190,52 +154,42 @@ export function AccountStorage({ accountId, onChange }: { accountId: string; onC
             )}
             {!relocating && !relocationError && moved && <div className="muted">✓ Existing files were moved to the new folder.</div>}
 
-            {isFilesystem && (
-                <>
-                    <label htmlFor="acct-prefix">Archive folder</label>
-                    <input
-                        id="acct-prefix"
-                        type="text"
-                        value={prefix}
-                        disabled={!loaded}
-                        placeholder={settings?.defaultPrefix ? `${settings.defaultPrefix} (default)` : 'Default'}
-                        onChange={e => edit(setPrefix)(e.target.value)}
-                    />
-                    <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
-                        Top-level folder this account's photos are archived under. Leave blank to use the default
-                        {settings?.defaultPrefix ? ` (${settings.defaultPrefix}, from the Apple ID)` : ' (from the Apple ID)'}.
-                        Give each account a <strong>distinct</strong> folder — two accounts sharing one can overwrite each other's files.
-                        Changing this moves already-backed-up files to the new folder.
-                    </p>
-                </>
-            )}
+            <label htmlFor="acct-prefix">Archive folder</label>
+            <input
+                id="acct-prefix"
+                type="text"
+                value={prefix}
+                disabled={!loaded}
+                placeholder={settings?.defaultPrefix ? `${settings.defaultPrefix} (default)` : 'Default'}
+                onChange={e => edit(setPrefix)(e.target.value)}
+            />
+            <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
+                Top-level folder this account's photos are archived under. Leave blank to use the default
+                {settings?.defaultPrefix ? ` (${settings.defaultPrefix}, from the Apple ID)` : ' (from the Apple ID)'}.
+                Give each account a <strong>distinct</strong> folder — two accounts sharing one can overwrite each other's files.
+                Changing this moves already-backed-up files to the new folder.
+            </p>
 
-            {isFilesystem ? (
-                <>
-                    <label htmlFor="acct-layout">Photo organization</label>
-                    <select id="acct-layout" value={layout ?? defaults?.photosLayout ?? 'flat'} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
-                        {LAYOUTS.map(l => (
-                            <option key={l.value} value={l.value}>
-                                {l.label}
-                            </option>
-                        ))}
-                    </select>
+            <label htmlFor="acct-layout">Photo organization</label>
+            <select id="acct-layout" value={layout ?? defaults?.photosLayout ?? 'flat'} disabled={!loaded} onChange={e => edit(setLayout)(e.target.value as PhotoLayout)}>
+                {LAYOUTS.map(l => (
+                    <option key={l.value} value={l.value}>
+                        {l.label}
+                    </option>
+                ))}
+            </select>
 
-                    <label htmlFor="acct-naming">File naming</label>
-                    <select id="acct-naming" value={naming ?? defaults?.photosNaming ?? 'clean'} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
-                        {NAMINGS.map(n => (
-                            <option key={n.value} value={n.value}>
-                                {n.label}
-                            </option>
-                        ))}
-                    </select>
-                    <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
-                        Overrides the chosen preset's organization for this account. Leave a control on its default value to follow the preset.
-                    </p>
-                </>
-            ) : (
-                <p className="muted">Photos for this account upload to Immich, which owns organization — there is nothing to override here.</p>
-            )}
+            <label htmlFor="acct-naming">File naming</label>
+            <select id="acct-naming" value={naming ?? defaults?.photosNaming ?? 'clean'} disabled={!loaded} onChange={e => edit(setNaming)(e.target.value as PhotoNaming)}>
+                {NAMINGS.map(n => (
+                    <option key={n.value} value={n.value}>
+                        {n.label}
+                    </option>
+                ))}
+            </select>
+            <p className="muted" style={{ marginTop: -4, fontSize: '0.85em' }}>
+                Overrides the chosen preset's organization for this account. Leave a control on its default value to follow the preset.
+            </p>
 
             <button className="primary compact" onClick={save} disabled={saving || !dirty || !loaded} style={{ marginTop: 12 }}>
                 {saving ? 'Saving…' : 'Save storage settings'}

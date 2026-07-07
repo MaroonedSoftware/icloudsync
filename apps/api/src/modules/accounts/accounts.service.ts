@@ -1,22 +1,20 @@
 import { Kysely } from 'kysely';
 import type { DB } from '../data/kysely.js';
-import type { DestinationKind, FilesystemPreset } from '../icloud/storage/photo.destination.js';
+import type { FilesystemPreset } from '../icloud/storage/photo.destination.js';
 import type { PhotoLayout } from '../icloud/storage/photo.layout.js';
 import type { PhotoNaming } from '../icloud/storage/photo.naming.js';
 
 /**
- * An account's backup-destination choice and on-disk organization overrides. Each
- * field is `null` when the account falls back to the built-in default
- * (`filesystem` / `immich` preset / `flat` / `clean`) rather than pinning its own.
+ * An account's on-disk photo-organization overrides. Each field is `null` when
+ * the account falls back to the built-in default (`immich` preset / `flat` /
+ * `clean`) rather than pinning its own.
  */
 export interface AccountPhotoSettings {
-    /** Destination kind override (`filesystem` archive vs `immich` upload), or `null` to use the built-in default. */
-    destination: DestinationKind | null;
-    /** Filesystem preset override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
+    /** Filesystem preset override, or `null` to use the built-in default. */
     preset: FilesystemPreset | null;
-    /** Layout override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
+    /** Layout override, or `null` to use the built-in default. */
     layout: PhotoLayout | null;
-    /** Naming override, or `null` to use the built-in default. Ignored when the destination is `immich`. */
+    /** Naming override, or `null` to use the built-in default. */
     naming: PhotoNaming | null;
 }
 
@@ -108,17 +106,16 @@ export class AccountsService {
     }
 
     /**
-     * An account's destination + layout/naming overrides. Each field is `null` when
-     * the account uses the built-in default; an unknown account also reads as all-null.
+     * An account's preset + layout/naming overrides. Each field is `null` when the
+     * account uses the built-in default; an unknown account also reads as all-null.
      */
     async photoSettings(id: string): Promise<AccountPhotoSettings> {
         const row = await this.db
             .selectFrom('icloudAccounts')
-            .select(['photosDestination', 'photosPreset', 'photosLayout', 'photosNaming'])
+            .select(['photosPreset', 'photosLayout', 'photosNaming'])
             .where('id', '=', id)
             .executeTakeFirst();
         return {
-            destination: (row?.photosDestination ?? null) as DestinationKind | null,
             preset: (row?.photosPreset ?? null) as FilesystemPreset | null,
             layout: (row?.photosLayout ?? null) as PhotoLayout | null,
             naming: (row?.photosNaming ?? null) as PhotoNaming | null,
@@ -131,8 +128,7 @@ export class AccountsService {
      * no-op when `patch` is empty.
      */
     async setPhotoSettings(id: string, patch: Partial<AccountPhotoSettings>): Promise<void> {
-        const set: { photosDestination?: string | null; photosPreset?: string | null; photosLayout?: string | null; photosNaming?: string | null } = {};
-        if ('destination' in patch) set.photosDestination = patch.destination ?? null;
+        const set: { photosPreset?: string | null; photosLayout?: string | null; photosNaming?: string | null } = {};
         if ('preset' in patch) set.photosPreset = patch.preset ?? null;
         if ('layout' in patch) set.photosLayout = patch.layout ?? null;
         if ('naming' in patch) set.photosNaming = patch.naming ?? null;

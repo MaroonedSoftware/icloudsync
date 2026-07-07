@@ -2,7 +2,6 @@ import { KyselyRepository } from '@maroonedsoftware/kysely';
 import type { PhotoAsset, PhotoResource } from '@icloudsync/icloud';
 import { Kysely, sql, type SelectQueryBuilder } from 'kysely';
 import type { DB, Json } from '../../data/kysely.js';
-import type { DestinationKind } from '../storage/photo.destination.js';
 
 /**
  * The persistence surface the photo-sync job depends on. Keeping it an interface
@@ -13,11 +12,10 @@ export interface PhotoStore {
     /** Insert-or-update a batch of assets for an account. Returns the row count written. */
     upsertBatch(accountId: string, assets: PhotoAsset[]): Promise<number>;
     /**
-     * Map of `recordName → { checksum, key, destination }` for assets already backed
-     * up. Serves both as the re-sync skip set (compare `checksum` *and* `destination`,
-     * so a copy made for a different destination doesn't count as done) and as the
-     * source of each asset's existing storage `key`, which the job uses to tell its
-     * own prior copy apart from a genuine name collision when resolving the archive key.
+     * Map of `recordName → { checksum, key }` for assets already backed up. Serves
+     * both as the re-sync skip set (compare `checksum`) and as the source of each
+     * asset's existing storage `key`, which the job uses to tell its own prior copy
+     * apart from a genuine name collision when resolving the archive key.
      */
     backedUp(accountId: string): Promise<Map<string, BackedUpAsset>>;
     /** Record that an asset's bytes have been archived. */
@@ -30,8 +28,6 @@ export interface BackedUpAsset {
     checksum: string | null;
     /** Storage key the existing copy lives under, or `null` if not recorded. */
     key: string | null;
-    /** Destination this copy was backed up to, or `null` for backups predating the column (treated as unknown → re-verify). */
-    destination: DestinationKind | null;
 }
 
 /** Details of an archived copy, recorded against the asset row. */
@@ -42,8 +38,6 @@ export interface BackupRecord {
     size: number;
     /** Checksum of the archived rendition, used to detect changes on re-sync. */
     checksum: string | null;
-    /** Destination the bytes were backed up to, so a later destination switch re-runs the backup. */
-    destination: DestinationKind;
 }
 
 /** A synced photo row as returned to API callers (dates normalised to epoch ms / ISO). */
@@ -125,7 +119,15 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
     async upsertBatch(accountId: string, assets: PhotoAsset[]): Promise<number> {
         if (assets.length === 0) return 0;
 
-        const rows = assets.map(asset => ({
+        // Collapse duplicate record names within the batch, keeping the last
+        // occurrence (freshest metadata). Postgres rejects an ON CONFLICT DO
+        // UPDATE whose VALUES touch the same conflict target twice ("cannot
+        // affect row a second time"), and iCloud paging can surface the same
+        // recordName more than once, so the batch must be unique by conflict key.
+        const unique = new Map<string, PhotoAsset>();
+        for (const asset of assets) unique.set(asset.recordName, asset);
+
+        const rows = [...unique.values()].map(asset => ({
             accountId,
             recordName: asset.recordName,
             masterRecordName: asset.masterRecordName ?? null,
@@ -162,11 +164,11 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
     async backedUp(accountId: string): Promise<Map<string, BackedUpAsset>> {
         const rows = await this.db
             .selectFrom('icloudPhotos')
-            .select(['recordName', 'backupChecksum', 'backupKey', 'backupDestination'])
+            .select(['recordName', 'backupChecksum', 'backupKey'])
             .where('accountId', '=', accountId)
             .where('backedUpAt', 'is not', null)
             .execute();
-        return new Map(rows.map(r => [r.recordName, { checksum: r.backupChecksum, key: r.backupKey, destination: r.backupDestination as DestinationKind | null }]));
+        return new Map(rows.map(r => [r.recordName, { checksum: r.backupChecksum, key: r.backupKey }]));
     }
 
     async markBackedUp(accountId: string, recordName: string, backup: BackupRecord): Promise<void> {
@@ -176,7 +178,6 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
                 backupKey: backup.key,
                 backupSize: BigInt(backup.size),
                 backupChecksum: backup.checksum,
-                backupDestination: backup.destination,
                 backedUpAt: sql`now()`,
             })
             .where('accountId', '=', accountId)

@@ -61,7 +61,6 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
                     container.get(PhotosRepository),
                     container.get(PhotoArchive),
                     container.get(Logger),
-                    container.get(SettingsService),
                     container.get(NotificationsService),
                     container.get(AccountsService),
                     container.get(SyncProgressRegistry),

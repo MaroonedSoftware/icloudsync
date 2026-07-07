@@ -1,6 +1,5 @@
 import { Kysely, sql } from 'kysely';
 import { DEFAULT_SYNC_CRON } from '../icloud/sync/sync.defaults.js';
-import { immichSettingsSchema, type ImmichSettings } from '../icloud/storage/photo.destination.js';
 import {
     DEFAULT_NOTIFICATION_SETTINGS,
     notificationSettingsSchema,
@@ -11,7 +10,6 @@ import type { DB, Json } from '../data/kysely.js';
 
 /** Setting keys persisted in `app_settings`. */
 const KEY = {
-    immich: 'immich',
     syncCron: 'sync_cron',
     notifications: 'notifications',
     /** Runtime throttle state: `{ [account]: lastNotifiedIso }`. Not part of {@link AppSettingsValues}. */
@@ -20,13 +18,6 @@ const KEY = {
 
 /** The user-facing settings, with defaults applied. */
 export interface AppSettingsValues {
-    /**
-     * The global Immich connection (server URL, API key, reconcile flags) shared
-     * by every account that routes to Immich, or `null` when none is configured.
-     * *Where* each account's photos go is a per-account choice (see
-     * `AccountsService`), not part of this global config.
-     */
-    immich: ImmichSettings | null;
     /** Sync schedule (cron). */
     syncCron: string;
     /** Admin notification config (channel, throttle, webhook/SMTP details). */
@@ -37,10 +28,10 @@ export interface AppSettingsValues {
  * Runtime, user-editable configuration, persisted in Postgres (`app_settings`)
  * rather than the environment. Each setting is a `(key, jsonb value)` row;
  * unset keys fall back to a built-in default. This is the source of truth for
- * the global Immich connection and the sync schedule — the per-account backup
- * destination and on-disk photo layout/naming are per-account (see
- * `AccountsService`), the set of accounts lives in `icloud_accounts`, and secrets
- * and infra (DB URL, encryption secret, ports, storage paths) stay in env.
+ * the sync schedule and admin notifications — the on-disk photo preset/layout/
+ * naming are per-account (see `AccountsService`), the set of accounts lives in
+ * `icloud_accounts`, and secrets and infra (DB URL, encryption secret, ports,
+ * storage paths) stay in env.
  */
 export class SettingsService {
     constructor(private readonly db: Kysely<DB>) {}
@@ -57,33 +48,6 @@ export class SettingsService {
             .values({ key, value: json })
             .onConflict(oc => oc.column('key').doUpdateSet({ value: json, updatedAt: sql`now()` }))
             .execute();
-    }
-
-    /**
-     * The global Immich connection, or `null` when none is configured (or a stored
-     * value fails to validate, e.g. after a schema change). Accounts that route to
-     * Immich upload here; a `null` connection means those accounts are skipped at
-     * sync time until one is set.
-     */
-    async immich(): Promise<ImmichSettings | null> {
-        const stored = await this.read<unknown>(KEY.immich);
-        if (stored == null) return null;
-        const parsed = immichSettingsSchema.safeParse(stored);
-        return parsed.success ? parsed.data : null;
-    }
-
-    /**
-     * Validate and persist the global Immich connection (returning the stored
-     * value), or clear it when passed `null` (returning `null`).
-     */
-    async setImmich(patch: ImmichSettings | null): Promise<ImmichSettings | null> {
-        if (patch === null) {
-            await this.write(KEY.immich, null);
-            return null;
-        }
-        const value = immichSettingsSchema.parse(patch);
-        await this.write(KEY.immich, value);
-        return value;
     }
 
     /** The sync schedule cron (default every 6 hours). */
@@ -138,7 +102,7 @@ export class SettingsService {
 
     /** All user-facing settings at once, with defaults applied. */
     async all(): Promise<AppSettingsValues> {
-        const [immich, syncCron, notifications] = await Promise.all([this.immich(), this.syncCron(), this.notifications()]);
-        return { immich, syncCron, notifications };
+        const [syncCron, notifications] = await Promise.all([this.syncCron(), this.notifications()]);
+        return { syncCron, notifications };
     }
 }

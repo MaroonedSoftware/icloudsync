@@ -48,26 +48,19 @@ describe('SettingsService (integration)', () => {
         await db.deleteFrom('appSettings').where('key', '!=', 'icloud_encryption_salt').execute();
 
         // Defaults when empty.
-        expect(await settings.immich()).toBeNull();
         expect(await settings.syncCron()).toBe('0 */6 * * *');
         expect(await settings.notifications()).toEqual({ channel: 'none', throttleHours: 24 });
 
         // Persist.
-        await settings.setImmich({ baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true });
         await settings.setSyncCron('0 3 * * *');
         await settings.setNotifications({ channel: 'webhook', webhookUrl: 'https://hook.example/x' });
 
         // Read back (a fresh instance to prove it's the DB, not memory).
         const fresh = new SettingsService(db);
         expect(await fresh.all()).toEqual({
-            immich: { baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true },
             syncCron: '0 3 * * *',
             notifications: { channel: 'webhook', throttleHours: 24, webhookUrl: 'https://hook.example/x' },
         });
-
-        // Clearing the connection reads back as null again.
-        await settings.setImmich(null);
-        expect(await fresh.immich()).toBeNull();
 
         // Upsert overwrites.
         await settings.setSyncCron('0 6 * * *');

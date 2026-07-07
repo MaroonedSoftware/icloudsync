@@ -10,10 +10,8 @@ import { createApiApp } from '../../src/modules/http/server.js';
 import { SettingsService } from '../../src/modules/settings/settings.service.js';
 import { AccountsService, type AccountPhotoSettings } from '../../src/modules/accounts/index.js';
 import { RelocateRegistry } from '../../src/modules/icloud/sync/relocate.registry.js';
-import { ImmichProbe, type ImmichConnection } from '../../src/modules/icloud/storage/immich.probe.js';
 import { NotificationsService } from '../../src/modules/notifications/index.js';
 import type { NotificationSettings, NotificationSettingsPatch } from '../../src/modules/notifications/index.js';
-import type { ImmichSettings } from '../../src/modules/icloud/storage/photo.destination.js';
 
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
@@ -23,18 +21,11 @@ const OTHER_ID = '55555555-5555-4555-8555-555555555555';
 class FakeSettings {
     cron = '0 */6 * * *';
     notifications: NotificationSettings = { channel: 'none', throttleHours: 24 };
-    immichValue: ImmichSettings | null = null;
     all = () =>
         Promise.resolve({
-            immich: this.immichValue,
             syncCron: this.cron,
             notifications: this.notifications,
         });
-    immich = () => Promise.resolve(this.immichValue);
-    setImmich = (v: ImmichSettings | null) => {
-        this.immichValue = v;
-        return Promise.resolve(v);
-    };
     setSyncCron = (c: string) => {
         this.cron = c;
         return Promise.resolve();
@@ -65,9 +56,9 @@ class FakeAccounts {
                   }
                 : undefined,
         );
-    photoSettings = (account: string) => Promise.resolve(this.overrides.get(account) ?? { destination: null, preset: null, layout: null, naming: null });
+    photoSettings = (account: string) => Promise.resolve(this.overrides.get(account) ?? { preset: null, layout: null, naming: null });
     setPhotoSettings = (account: string, patch: Partial<AccountPhotoSettings>) => {
-        const current = this.overrides.get(account) ?? { destination: null, preset: null, layout: null, naming: null };
+        const current = this.overrides.get(account) ?? { preset: null, layout: null, naming: null };
         this.overrides.set(account, { ...current, ...patch });
         return Promise.resolve();
     };
@@ -88,17 +79,6 @@ class FakeNotifications {
     sendTest = () => {
         this.tests += 1;
         return this.failWith ? Promise.reject(new Error(this.failWith)) : Promise.resolve();
-    };
-}
-
-class FakeImmichProbe {
-    /** The connections it was asked to check, in order. */
-    readonly checked: ImmichConnection[] = [];
-    /** When set, every check reports this failure message; otherwise checks pass. */
-    failWith?: string;
-    check = (connection: ImmichConnection) => {
-        this.checked.push(connection);
-        return Promise.resolve(this.failWith ? { ok: false, message: this.failWith } : { ok: true });
     };
 }
 
@@ -137,14 +117,12 @@ describe('icloud settings routes', () => {
     let broker: FakeBroker;
     let notifications: FakeNotifications;
     let accounts: FakeAccounts;
-    let immichProbe: FakeImmichProbe;
 
     beforeEach(() => {
         settings = new FakeSettings();
         broker = new FakeBroker();
         notifications = new FakeNotifications();
         accounts = new FakeAccounts();
-        immichProbe = new FakeImmichProbe();
         const registry = createRegistry();
         registry.register(Logger).useInstance(silentLogger);
         registerBodyParser(registry);
@@ -153,7 +131,6 @@ describe('icloud settings routes', () => {
         registry.register(RelocateRegistry).useInstance(new RelocateRegistry());
         registry.register(JobBroker).useInstance(broker as unknown as JobBroker);
         registry.register(NotificationsService).useInstance(notifications as unknown as NotificationsService);
-        registry.register(ImmichProbe).useInstance(immichProbe as unknown as ImmichProbe);
 
         server = createApiApp(registry.build()).listen(0);
         base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -168,69 +145,9 @@ describe('icloud settings routes', () => {
         const res = await fetch(`${base}/icloud/settings`);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({
-            immich: null,
             syncCron: '0 */6 * * *',
             notifications: { channel: 'none', throttleHours: 24 },
         });
-    });
-
-    it('sets the global Immich connection, defaulting the reconcile flags', async () => {
-        const res = await patch({ immich: { baseUrl: 'https://immich.test', apiKey: 'secret' } });
-        expect(res.status).toBe(200);
-        expect(settings.immichValue).toEqual({
-            baseUrl: 'https://immich.test',
-            apiKey: 'secret',
-            recreateAlbums: true,
-            syncFavorites: true,
-        });
-    });
-
-    it('clears the Immich connection when passed null', async () => {
-        settings.immichValue = { baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true };
-        const res = await patch({ immich: null });
-        expect(res.status).toBe(200);
-        expect(settings.immichValue).toBeNull();
-    });
-
-    it('rejects an Immich connection with a bad URL with 400', async () => {
-        const res = await patch({ immich: { baseUrl: 'nope', apiKey: 'k' } });
-        expect(res.status).toBe(400);
-    });
-
-    const testImmich = (body: unknown) =>
-        fetch(`${base}/icloud/immich/test`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-
-    it('tests the provided Immich connection and reports success', async () => {
-        const res = await testImmich({ baseUrl: 'https://immich.test', apiKey: 'k' });
-        expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true });
-        expect(immichProbe.checked).toEqual([{ baseUrl: 'https://immich.test', apiKey: 'k' }]);
-    });
-
-    it('falls back to the stored Immich connection when the body is empty', async () => {
-        settings.immichValue = { baseUrl: 'https://saved.test', apiKey: 'saved-key', recreateAlbums: true, syncFavorites: true };
-        const res = await testImmich({});
-        expect(res.status).toBe(200);
-        expect(immichProbe.checked).toEqual([{ baseUrl: 'https://saved.test', apiKey: 'saved-key', recreateAlbums: true, syncFavorites: true }]);
-    });
-
-    it('422s an empty-body test when no connection is stored', async () => {
-        const res = await testImmich({});
-        expect(res.status).toBe(422);
-        expect((await res.json()).ok).toBe(false);
-        expect(immichProbe.checked).toHaveLength(0); // never probed — nothing to test
-    });
-
-    it('reports a failed probe as 422 with the reason', async () => {
-        immichProbe.failWith = 'the API key was rejected';
-        const res = await testImmich({ baseUrl: 'https://immich.test', apiKey: 'bad' });
-        expect(res.status).toBe(422);
-        expect(await res.json()).toEqual({ ok: false, message: 'the API key was rejected' });
-    });
-
-    it('rejects a test with a malformed URL with 400', async () => {
-        const res = await testImmich({ baseUrl: 'nope', apiKey: 'k' });
-        expect(res.status).toBe(400);
     });
 
     it('updates the schedule and re-arms the cron', async () => {
@@ -271,7 +188,6 @@ describe('icloud settings routes', () => {
         const res = await fetch(accountUrl(ACCOUNT_ID));
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({
-            photosDestination: null,
             photosPreset: null,
             photosLayout: null,
             photosNaming: null,
@@ -279,20 +195,16 @@ describe('icloud settings routes', () => {
             defaultPrefix: 'a', // from the Apple ID a@icloud.com
             relocating: false,
             relocationError: null,
-            defaults: { photosDestination: 'filesystem', photosPreset: 'immich', photosLayout: 'flat', photosNaming: 'clean' },
-            immichConfigured: false,
+            defaults: { photosPreset: 'immich', photosLayout: 'flat', photosNaming: 'clean' },
         });
     });
 
-    it('reflects a configured Immich connection and an account routed to it', async () => {
-        settings.immichValue = { baseUrl: 'https://immich.test', apiKey: 'k', recreateAlbums: true, syncFavorites: true };
-        const pinned = await patchAccount(ACCOUNT_ID, { photosDestination: 'immich', photosPreset: 'browsable' });
+    it('pins the filesystem preset override', async () => {
+        const pinned = await patchAccount(ACCOUNT_ID, { photosPreset: 'browsable' });
         expect(pinned.status).toBe(200);
         const body = await pinned.json();
-        expect(body.photosDestination).toBe('immich');
         expect(body.photosPreset).toBe('browsable');
-        expect(body.immichConfigured).toBe(true);
-        expect(accounts.overrides.get(ACCOUNT_ID)).toEqual({ destination: 'immich', preset: 'browsable', layout: null, naming: null });
+        expect(accounts.overrides.get(ACCOUNT_ID)).toEqual({ preset: 'browsable', layout: null, naming: null });
     });
 
     it('pins and clears a custom archive prefix', async () => {
@@ -370,7 +282,7 @@ describe('icloud settings routes', () => {
         const pinned = await patchAccount(ACCOUNT_ID, { photosLayout: 'album' });
         expect(pinned.status).toBe(200);
         expect((await pinned.json()).photosLayout).toBe('album');
-        expect(accounts.overrides.get(ACCOUNT_ID)).toEqual({ destination: null, preset: null, layout: 'album', naming: null });
+        expect(accounts.overrides.get(ACCOUNT_ID)).toEqual({ preset: null, layout: 'album', naming: null });
 
         const cleared = await patchAccount(ACCOUNT_ID, { photosLayout: null });
         expect(cleared.status).toBe(200);
