@@ -20,7 +20,8 @@
         "format": "prettier --write .",
         "test": "vitest run",
         "login:live": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/login.ts",
-        "photos:probe": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/photos.probe.ts"
+        "photos:probe": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/photos.probe.ts",
+        "photos:audit": "node --no-warnings --no-deprecation --import @swc-node/register/esm-register ./scripts/photos.paging-audit.ts"
     },
     "devDependencies": {
         "@repo/config-eslint": "workspace:*",
@@ -30,6 +31,6 @@
         "@types/node": "^26.1.0",
         "prettier": "^3.9.4",
         "typescript": "^6.0.3",
-        "vitest": "^4.1.9"
+        "vitest": "^4.1.10"
     }
 }
