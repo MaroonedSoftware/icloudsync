@@ -4,6 +4,8 @@
 *.pyc
 .env
 *.log
+*.log.[0-9]*
+logs/
 
 build/
 dist/

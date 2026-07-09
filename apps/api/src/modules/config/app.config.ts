@@ -16,6 +16,7 @@ export interface AppConfigShape {
     http: { port?: number | string };
     database: { url?: string };
     web: { root?: string };
+    logging: { dir?: string; level?: string; maxSizeMb?: number | string; maxFiles?: number | string };
 }
 
 /**

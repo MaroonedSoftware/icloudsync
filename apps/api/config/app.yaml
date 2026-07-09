@@ -20,3 +20,14 @@ database:
 web:
   # Directory of the built SPA (apps/web/dist) to serve. Unset = API only.
   root: "${env:WEB_ROOT}"
+logging:
+  # Rotating file log (api.log + api.log.1..N). Captures uncaught exceptions and
+  # unhandled rejections so a crash leaves a durable reason on disk.
+  # Directory for the log files. Default: ./logs (relative to the process cwd).
+  dir: "${env:LOG_DIR}"
+  # Lowest level to persist: error | warn | info | debug | trace. Default: info
+  level: "${env:LOG_LEVEL}"
+  # Roll the active file over once it passes this many megabytes. Default: 5
+  maxSizeMb: "${env:LOG_MAX_SIZE_MB}"
+  # How many files to keep, including the active one. Default: 5
+  maxFiles: "${env:LOG_MAX_FILES}"

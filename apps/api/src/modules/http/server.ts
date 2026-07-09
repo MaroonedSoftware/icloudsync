@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { JobBroker } from '@maroonedsoftware/jobbroker';
 import { errorMiddleware, serverKitContextMiddleware } from '@maroonedsoftware/koa';
 import type { ServerKitContext } from '@maroonedsoftware/koa';
-import { ConsoleLogger, Logger } from '@maroonedsoftware/logger';
+import { Logger } from '@maroonedsoftware/logger';
 import type { StorageProvider } from '@maroonedsoftware/storage';
 import { createRegistry, type Container } from 'injectkit';
 import Koa, { type DefaultState } from 'koa';
@@ -11,6 +11,7 @@ import { databaseUrl, loadAppConfig, webRoot, type AppConfigShape } from '../con
 import type { AppConfig } from '@maroonedsoftware/appconfig';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { registerData } from '../data/data.module.js';
+import { buildLogger, LogConfig } from '../logging/index.js';
 import { ICloudConfig } from '../icloud/icloud.config.js';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { registerICloud } from '../icloud/icloud.module.js';
@@ -86,6 +87,8 @@ export interface ApiServerOptions {
     webRoot?: string;
     /** Override the sync schedule; defaults to the `sync_cron` setting in the database. */
     cron?: string;
+    /** Logger to use throughout the app. Defaults to a rotating file logger (mirrored to console) built from the `logging` config. */
+    logger?: Logger;
 }
 
 export interface ApiServer {
@@ -118,7 +121,7 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
     const connectionString = options.connectionString ?? databaseUrl(appConfig);
     const ui = options.webRoot ?? webRoot(appConfig);
 
-    const logger = new ConsoleLogger();
+    const logger = options.logger ?? buildLogger(LogConfig.fromAppConfig(appConfig));
     const registry = createRegistry();
     registry.register(Logger).useInstance(logger);
     registerBodyParser(registry);
