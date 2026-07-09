@@ -1,4 +1,10 @@
 import { Kysely, sql } from 'kysely';
+import {
+    DEFAULT_LOGGING_SETTINGS,
+    loggingSettingsSchema,
+    type LoggingSettings,
+    type LoggingSettingsPatch,
+} from '../logging/logging.settings.js';
 import { DEFAULT_SYNC_CRON } from '../icloud/sync/sync.defaults.js';
 import {
     DEFAULT_NOTIFICATION_SETTINGS,
@@ -12,6 +18,7 @@ import type { DB, Json } from '../data/kysely.js';
 const KEY = {
     syncCron: 'sync_cron',
     notifications: 'notifications',
+    logging: 'logging',
     /** Runtime throttle state: `{ [account]: lastNotifiedIso }`. Not part of {@link AppSettingsValues}. */
     reauthNotifyState: 'reauth_notify_state',
 } as const;
@@ -22,6 +29,8 @@ export interface AppSettingsValues {
     syncCron: string;
     /** Admin notification config (channel, throttle, webhook/SMTP details). */
     notifications: NotificationSettings;
+    /** Rotating file log config (enabled, level, rotation limits). */
+    logging: LoggingSettings;
 }
 
 /**
@@ -79,6 +88,22 @@ export class SettingsService {
         return merged;
     }
 
+    /** The rotating file log config, with defaults applied (enabled, level `info`, 5 MB × 5 files). */
+    async logging(): Promise<LoggingSettings> {
+        const stored = await this.read<unknown>(KEY.logging);
+        if (stored === undefined) return DEFAULT_LOGGING_SETTINGS;
+        const parsed = loggingSettingsSchema.safeParse(stored);
+        return parsed.success ? parsed.data : DEFAULT_LOGGING_SETTINGS;
+    }
+
+    /** Merge a partial logging config over the current one, validate, persist it, and return the stored value. */
+    async setLogging(patch: LoggingSettingsPatch): Promise<LoggingSettings> {
+        const current = await this.logging();
+        const merged = loggingSettingsSchema.parse({ ...current, ...patch });
+        await this.write(KEY.logging, merged);
+        return merged;
+    }
+
     /** When `account` was last sent a reauth alert (ISO string), or undefined if never. */
     async reauthNotifiedAt(account: string): Promise<string | undefined> {
         const state = (await this.read<Record<string, string>>(KEY.reauthNotifyState)) ?? {};
@@ -102,7 +127,7 @@ export class SettingsService {
 
     /** All user-facing settings at once, with defaults applied. */
     async all(): Promise<AppSettingsValues> {
-        const [syncCron, notifications] = await Promise.all([this.syncCron(), this.notifications()]);
-        return { syncCron, notifications };
+        const [syncCron, notifications, logging] = await Promise.all([this.syncCron(), this.notifications(), this.logging()]);
+        return { syncCron, notifications, logging };
     }
 }

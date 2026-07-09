@@ -11,7 +11,7 @@ import { databaseUrl, loadAppConfig, webRoot, type AppConfigShape } from '../con
 import type { AppConfig } from '@maroonedsoftware/appconfig';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { registerData } from '../data/data.module.js';
-import { buildLogger, LogConfig } from '../logging/index.js';
+import { applyLoggingSettings, buildLogger, LogConfig, RotatingFileLogger } from '../logging/index.js';
 import { ICloudConfig } from '../icloud/icloud.config.js';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { registerICloud } from '../icloud/icloud.module.js';
@@ -124,10 +124,20 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
     const logger = options.logger ?? buildLogger(LogConfig.fromAppConfig(appConfig));
     const registry = createRegistry();
     registry.register(Logger).useInstance(logger);
+    // Expose the concrete file logger too, so the settings route can retune it live.
+    if (logger instanceof RotatingFileLogger) registry.register(RotatingFileLogger).useInstance(logger);
     registerBodyParser(registry);
     const db = registerData(registry, connectionString);
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
+
+    // The logger booted from env (so pre-database crashes are captured); now that
+    // the database is reachable, apply the user's stored logging settings over it.
+    try {
+        applyLoggingSettings(logger, await settings.logging());
+    } catch (error) {
+        logger.warn('applying stored logging settings on boot failed', error);
+    }
     registry.register(AccountsService).useInstance(new AccountsService(db));
     // The encrypted session lives on each account's row and the salt in app_settings
     // (no session volume needed); `storage`, when given, backs the photo archive.

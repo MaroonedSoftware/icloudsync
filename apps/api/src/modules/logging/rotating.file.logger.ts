@@ -20,10 +20,20 @@ export interface RotatingFileLoggerOptions {
     maxSizeBytes?: number;
     /** Total files to keep, including the active one. Older files are dropped. Defaults to 5. Minimum 1. */
     maxFiles?: number;
+    /** Whether file writes are on. `false` skips the file (the mirror still receives messages). Defaults to `true`. */
+    enabled?: boolean;
     /** Optional logger to also forward every (level-passing) message to, e.g. a {@link ConsoleLogger}. */
     mirror?: Logger;
     /** Clock, injectable for tests. Defaults to `() => new Date()`. */
     now?: () => Date;
+}
+
+/** The runtime-tunable subset of {@link RotatingFileLoggerOptions}, applied via {@link RotatingFileLogger.configure}. */
+export interface RotatingFileLoggerConfig {
+    enabled?: boolean;
+    level?: LogLevel;
+    maxSizeBytes?: number;
+    maxFiles?: number;
 }
 
 /**
@@ -41,17 +51,20 @@ export interface RotatingFileLoggerOptions {
  */
 export class RotatingFileLogger extends Logger {
     private readonly filePath: string;
-    private readonly level: LogLevel;
-    private readonly maxSizeBytes: number;
-    private readonly maxFiles: number;
     private readonly mirror?: Logger;
     private readonly now: () => Date;
+    // Mutable so the settings UI can retune the logger at runtime (see {@link configure}).
+    private enabled: boolean;
+    private level: LogLevel;
+    private maxSizeBytes: number;
+    private maxFiles: number;
     /** Cached active-file size so most writes avoid a `statSync`; refreshed on rotate. */
     private size: number;
 
     constructor(options: RotatingFileLoggerOptions) {
         super();
         this.filePath = path.join(options.dir, options.fileName ?? 'api.log');
+        this.enabled = options.enabled ?? true;
         this.level = options.level ?? 'info';
         this.maxSizeBytes = Math.max(1, options.maxSizeBytes ?? 5_000_000);
         this.maxFiles = Math.max(1, Math.floor(options.maxFiles ?? 5));
@@ -60,6 +73,19 @@ export class RotatingFileLogger extends Logger {
 
         fs.mkdirSync(options.dir, { recursive: true });
         this.size = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).size : 0;
+    }
+
+    /**
+     * Retune the logger in place, without recreating it — so a settings change in
+     * the UI takes effect on the next log line rather than at the next restart. The
+     * log directory is fixed at construction (it is infra) and is not tunable here.
+     * A lowered `maxFiles`/`maxSizeBytes` applies from the next rotation onward.
+     */
+    configure(config: RotatingFileLoggerConfig): void {
+        if (config.enabled !== undefined) this.enabled = config.enabled;
+        if (config.level !== undefined) this.level = config.level;
+        if (config.maxSizeBytes !== undefined) this.maxSizeBytes = Math.max(1, config.maxSizeBytes);
+        if (config.maxFiles !== undefined) this.maxFiles = Math.max(1, Math.floor(config.maxFiles));
     }
 
     error(message: unknown, ...optionalParams: unknown[]): void {
@@ -88,7 +114,7 @@ export class RotatingFileLogger extends Logger {
     }
 
     private write(level: LogLevel, message: unknown, optionalParams: unknown[]): void {
-        if (RANK[level] > RANK[this.level]) return;
+        if (!this.enabled || RANK[level] > RANK[this.level]) return;
 
         const parts = [message, ...optionalParams].map(part => format(part)).filter(part => part.length > 0);
         const line = `${this.now().toISOString()} ${level.toUpperCase().padEnd(5)} ${parts.join(' ')}\n`;

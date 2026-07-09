@@ -15,6 +15,7 @@ import { PHOTO_NAMINGS } from '../icloud/storage/photo.naming.js';
 import { DEFAULT_FILESYSTEM_PRESET, FILESYSTEM_PRESETS, PRESET_MECHANICS } from '../icloud/storage/photo.destination.js';
 import { defaultArchivePrefix } from '../icloud/storage/photo.prefix.js';
 import { NotificationsService, notificationSettingsPatchSchema } from '../notifications/index.js';
+import { applyLoggingSettings, loggingSettingsPatchSchema, RotatingFileLogger } from '../logging/index.js';
 import { accountIdParam } from './route.helpers.js';
 
 /** A 5-field cron expression (minute hour day month weekday). */
@@ -27,6 +28,7 @@ const updateSchema = z
     .object({
         syncCron: cronSchema.optional(),
         notifications: notificationSettingsPatchSchema.optional(),
+        logging: loggingSettingsPatchSchema.optional(),
     })
     .refine(body => Object.values(body).some(v => v !== undefined), {
         message: 'no settings provided',
@@ -69,11 +71,12 @@ const accountSettingsSchema = z
 
 /**
  * Router for the database-backed runtime settings. Global across accounts: the
- * sync schedule and admin notifications. Changing the schedule reschedules the
- * pg-boss cron immediately, so it takes effect without a restart.
+ * sync schedule, admin notifications, and the file logger. Changing the schedule
+ * reschedules the pg-boss cron immediately, and changing the logging config
+ * retunes the live logger, so both take effect without a restart.
  *
- * - `GET /icloud/settings` → `{ syncCron, notifications }`.
- * - `PATCH /icloud/settings` `{ syncCron?, notifications? }` → the updated settings.
+ * - `GET /icloud/settings` → `{ syncCron, notifications, logging }`.
+ * - `PATCH /icloud/settings` `{ syncCron?, notifications?, logging? }` → the updated settings.
  * - `POST /icloud/notifications/test` → `{ sent: true }` after delivering a test
  *   notification over the configured channel (422 with the error if it fails).
  *
@@ -133,7 +136,7 @@ export function icloudSettingsRouter() {
 
     router.patch('/icloud/settings', json, async ctx => {
         const settings = ctx.container.get(SettingsService);
-        const { syncCron, notifications } = await parseAndValidate(ctx.body, updateSchema);
+        const { syncCron, notifications, logging } = await parseAndValidate(ctx.body, updateSchema);
 
         if (syncCron !== undefined) {
             await settings.setSyncCron(syncCron);
@@ -142,6 +145,12 @@ export function icloudSettingsRouter() {
             await ctx.container.get(JobBroker).schedule(SYNC_SWEEP_JOB, syncCron);
         }
         if (notifications !== undefined) await settings.setNotifications(notifications);
+        if (logging !== undefined) {
+            const merged = await settings.setLogging(logging);
+            // Retune the live logger so the change (enable/disable, level, rotation)
+            // takes effect immediately, not at the next restart.
+            if (ctx.container.hasRegistration(RotatingFileLogger)) applyLoggingSettings(ctx.container.get(RotatingFileLogger), merged);
+        }
 
         ctx.body = await settings.all();
     });

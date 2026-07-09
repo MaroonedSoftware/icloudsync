@@ -65,12 +65,20 @@ failing the backup.
 ### Configuration model
 
 Runtime, user-facing settings — the **account**, **photo layout**, **file
-naming**, and **sync schedule** — live in the database (global defaults in
-`app_settings`, per-account layout/naming overrides on `icloud_accounts`) and are
-edited in the web UI
+naming**, **sync schedule**, and **file logging** — live in the database (global
+defaults in `app_settings`, per-account layout/naming overrides on
+`icloud_accounts`) and are edited in the web UI
 (or `PATCH /icloud/settings`); changing the schedule reschedules the worker
-immediately. Only secrets and infra that must exist before the database is
-reachable stay in the environment (see the table below).
+immediately and changing the logging config retunes the live logger. Only
+secrets and infra that must exist before the database is reachable stay in the
+environment (see the table below).
+
+The app writes a **rotating file log** (`api.log` + `api.log.1…N` in `LOG_DIR`)
+that captures uncaught exceptions and unhandled rejections, so a crash leaves a
+durable reason on disk. Enable/disable it, set the level, and set the rotation
+size/count under **Settings → Logging**; only the log directory is env
+(`LOG_DIR`, infra), with `LOG_LEVEL` / `LOG_MAX_SIZE_MB` / `LOG_MAX_FILES` as the
+pre-database boot fallback.
 
 ### HTTP API
 
@@ -110,6 +118,7 @@ Secrets + infra only; everything user-facing is a DB setting (see above).
 | `ICLOUD_ENCRYPTION_SECRET` | yes | Derives the AES key for the at-rest session; changing it forces re-login |
 | `DATABASE_URL` | yes | Postgres connection string (also holds the encrypted session + settings) |
 | `ICLOUD_PHOTOS_DIR` | no | Where backed-up photo files are written (default `~/.icloudsync/photos`; the container uses `/data/photos`) |
+| `LOG_DIR` | no | Where the rotating file log is written (default `./logs`; the container uses `/data/logs` on a volume). Level/size/count are DB settings edited in the UI |
 | `WEB_ROOT` | no | Built SPA dir to serve; unset = API only (the image sets it) |
 | `PORT` | no | Listen port (image default `8930`; the app falls back to `3000` for local dev) |
 | `PUID` / `PGID` | no | User/group that should own written photo files; the container chowns the archive to these and drops privileges (default `99` / `100`, Unraid's `nobody:users`) |
@@ -118,8 +127,8 @@ Secrets + infra only; everything user-facing is a DB setting (see above).
 The container also serves `GET /health` — a DB-backed readiness probe (`200`
 when Postgres answers, `503` otherwise) wired to the image's Docker `HEALTHCHECK`.
 
-Database-backed global settings (UI / `PATCH /icloud/settings`): `sync_cron` and
-the admin notification config. Each account is a row in `icloud_accounts` keyed by
+Database-backed global settings (UI / `PATCH /icloud/settings`): `sync_cron`, the
+admin notification config, and the `logging` config. Each account is a row in `icloud_accounts` keyed by
 an auto-generated UUID (the Apple ID is a unique attribute); its encrypted session
 lives on that row (the `session` column), the Argon2id salt in `app_settings`, and
 its per-account `photos_preset` / `photos_layout` / `photos_naming` overrides

@@ -89,9 +89,23 @@ export interface NotificationSettings {
     email?: EmailSettings;
 }
 
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
+
+export interface LoggingSettings {
+    /** Whether the rotating file log is written. `false` stops file writes (console output is unaffected). */
+    enabled: boolean;
+    /** Lowest level to persist. */
+    level: LogLevel;
+    /** Roll the active file over once it passes this many megabytes. */
+    maxSizeMb: number;
+    /** Total files to keep, including the active one. */
+    maxFiles: number;
+}
+
 export interface AppSettings {
     syncCron: string;
     notifications: NotificationSettings;
+    logging: LoggingSettings;
 }
 
 /**
@@ -232,7 +246,7 @@ export const api = {
     cancelSync: (id: string) => request<{ cancelled: boolean }>(`${accountPath(id)}/sync/cancel`, { method: 'POST' }),
     stats: (id: string) => request<Stats>(`${accountPath(id)}/stats`),
     settings: () => request<AppSettings>('/icloud/settings'),
-    updateSettings: (patch: Partial<Pick<AppSettings, 'syncCron' | 'notifications'>>) =>
+    updateSettings: (patch: Partial<Pick<AppSettings, 'syncCron' | 'notifications' | 'logging'>>) =>
         request<AppSettings>('/icloud/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
     accountSettings: (id: string) => request<AccountSettings>(`${accountPath(id)}/settings`),
     /** Patch an account's preset/layout/naming/prefix overrides; `null` (or `''` for the prefix) clears an override back to the default. */

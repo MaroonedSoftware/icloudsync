@@ -1,11 +1,34 @@
 import { ConsoleLogger, Logger } from '@maroonedsoftware/logger';
 import { LogConfig } from './log.config.js';
+import type { LoggingSettings } from './logging.settings.js';
 import { RotatingFileLogger } from './rotating.file.logger.js';
 
 export { LogConfig } from './log.config.js';
 export type { LogConfigValues } from './log.config.js';
 export { RotatingFileLogger, LOG_LEVELS } from './rotating.file.logger.js';
-export type { LogLevel, RotatingFileLoggerOptions } from './rotating.file.logger.js';
+export type { LogLevel, RotatingFileLoggerOptions, RotatingFileLoggerConfig } from './rotating.file.logger.js';
+export {
+    loggingSettingsSchema,
+    loggingSettingsPatchSchema,
+    DEFAULT_LOGGING_SETTINGS,
+} from './logging.settings.js';
+export type { LoggingSettings, LoggingSettingsPatch } from './logging.settings.js';
+
+/**
+ * Push the database-backed {@link LoggingSettings} onto the live logger, if it is
+ * a {@link RotatingFileLogger}. A no-op for any other {@link Logger} (e.g. a test
+ * double), so callers need not know the concrete type. Converts the UI's
+ * megabytes to the logger's bytes.
+ */
+export function applyLoggingSettings(logger: Logger, settings: LoggingSettings): void {
+    if (!(logger instanceof RotatingFileLogger)) return;
+    logger.configure({
+        enabled: settings.enabled,
+        level: settings.level,
+        maxSizeBytes: Math.round(settings.maxSizeMb * 1_000_000),
+        maxFiles: settings.maxFiles,
+    });
+}
 
 /**
  * Build the application {@link Logger} from a {@link LogConfig}: a

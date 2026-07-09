@@ -12,6 +12,7 @@ import { AccountsService, type AccountPhotoSettings } from '../../src/modules/ac
 import { RelocateRegistry } from '../../src/modules/icloud/sync/relocate.registry.js';
 import { NotificationsService } from '../../src/modules/notifications/index.js';
 import type { NotificationSettings, NotificationSettingsPatch } from '../../src/modules/notifications/index.js';
+import type { LoggingSettings, LoggingSettingsPatch } from '../../src/modules/logging/index.js';
 
 const silentLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} } as Logger;
 
@@ -21,10 +22,12 @@ const OTHER_ID = '55555555-5555-4555-8555-555555555555';
 class FakeSettings {
     cron = '0 */6 * * *';
     notifications: NotificationSettings = { channel: 'none', throttleHours: 24 };
+    logging: LoggingSettings = { enabled: true, level: 'info', maxSizeMb: 5, maxFiles: 5 };
     all = () =>
         Promise.resolve({
             syncCron: this.cron,
             notifications: this.notifications,
+            logging: this.logging,
         });
     setSyncCron = (c: string) => {
         this.cron = c;
@@ -33,6 +36,10 @@ class FakeSettings {
     setNotifications = (patch: NotificationSettingsPatch) => {
         this.notifications = { ...this.notifications, ...patch };
         return Promise.resolve(this.notifications);
+    };
+    setLogging = (patch: LoggingSettingsPatch) => {
+        this.logging = { ...this.logging, ...patch };
+        return Promise.resolve(this.logging);
     };
 }
 
@@ -147,6 +154,7 @@ describe('icloud settings routes', () => {
         expect(await res.json()).toEqual({
             syncCron: '0 */6 * * *',
             notifications: { channel: 'none', throttleHours: 24 },
+            logging: { enabled: true, level: 'info', maxSizeMb: 5, maxFiles: 5 },
         });
     });
 
@@ -177,6 +185,25 @@ describe('icloud settings routes', () => {
 
     it('rejects an invalid webhook URL with 400', async () => {
         const res = await patch({ notifications: { channel: 'webhook', webhookUrl: 'not-a-url' } });
+        expect(res.status).toBe(400);
+    });
+
+    it('updates the logging config', async () => {
+        const res = await patch({ logging: { enabled: false, level: 'debug', maxSizeMb: 20, maxFiles: 10 } });
+        expect(res.status).toBe(200);
+        expect(settings.logging).toEqual({ enabled: false, level: 'debug', maxSizeMb: 20, maxFiles: 10 });
+        expect((await res.json()).logging).toEqual({ enabled: false, level: 'debug', maxSizeMb: 20, maxFiles: 10 });
+    });
+
+    it('merges a partial logging patch over the current config', async () => {
+        const res = await patch({ logging: { level: 'trace' } });
+        expect(res.status).toBe(200);
+        // Only the level changed; enabled/size/files kept their prior values.
+        expect(settings.logging).toEqual({ enabled: true, level: 'trace', maxSizeMb: 5, maxFiles: 5 });
+    });
+
+    it('rejects an unknown log level with 400', async () => {
+        const res = await patch({ logging: { level: 'verbose' } });
         expect(res.status).toBe(400);
     });
 

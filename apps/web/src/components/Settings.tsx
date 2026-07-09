@@ -3,6 +3,8 @@ import {
     api,
     type AppSettings,
     type FilesystemPreset,
+    type LoggingSettings,
+    type LogLevel,
     type NotificationChannel,
     type NotificationSettings,
     type PhotoLayout,
@@ -56,6 +58,17 @@ const EMPTY_EMAIL = { host: '', port: 587, secure: false, username: '', password
 
 const DEFAULT_NOTIFICATIONS: NotificationSettings = { channel: 'none', throttleHours: 24 };
 
+/** Log levels shown in the Logging section, most to least verbose. */
+const LOG_LEVELS: { value: LogLevel; label: string }[] = [
+    { value: 'error', label: 'Error (least)' },
+    { value: 'warn', label: 'Warning' },
+    { value: 'info', label: 'Info' },
+    { value: 'debug', label: 'Debug' },
+    { value: 'trace', label: 'Trace (most)' },
+];
+
+const DEFAULT_LOGGING: LoggingSettings = { enabled: true, level: 'info', maxSizeMb: 5, maxFiles: 5 };
+
 /**
  * Assemble a valid notifications patch: include `webhookUrl`/`email` only when
  * their required fields are filled, so an in-progress form doesn't fail the
@@ -72,6 +85,7 @@ function notificationsPatch(n: NotificationSettings): NotificationSettings {
 export function Settings({ onChange }: { onChange?: () => void }) {
     const [cron, setCron] = useState('0 */6 * * *');
     const [notifications, setNotifications] = useState<NotificationSettings>(DEFAULT_NOTIFICATIONS);
+    const [logging, setLogging] = useState<LoggingSettings>(DEFAULT_LOGGING);
     const [loaded, setLoaded] = useState(false);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -83,6 +97,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
     const apply = (s: AppSettings) => {
         setCron(s.syncCron);
         setNotifications(s.notifications ?? DEFAULT_NOTIFICATIONS);
+        setLogging(s.logging ?? DEFAULT_LOGGING);
     };
 
     useEffect(() => {
@@ -104,6 +119,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
         };
 
     const editNotifications = (patch: Partial<NotificationSettings>) => edit(setNotifications)({ ...notifications, ...patch });
+    const editLogging = (patch: Partial<LoggingSettings>) => edit(setLogging)({ ...logging, ...patch });
     const editEmail = (patch: Partial<NonNullable<NotificationSettings['email']>>) =>
         editNotifications({ email: { ...EMPTY_EMAIL, ...notifications.email, ...patch } });
 
@@ -115,6 +131,7 @@ export function Settings({ onChange }: { onChange?: () => void }) {
                 await api.updateSettings({
                     syncCron: cron,
                     notifications: notificationsPatch(notifications),
+                    logging,
                 }),
             );
             setDirty(false);
@@ -307,6 +324,60 @@ export function Settings({ onChange }: { onChange?: () => void }) {
                             Save your changes before sending a test.
                         </p>
                     )}
+                </>
+            )}
+
+            <h3>Logging</h3>
+            <p className="muted" style={{ marginTop: -4 }}>
+                A rotating file log that captures crashes (uncaught exceptions and unhandled rejections). Files are written to the server's log
+                directory as <code>api.log</code> and roll over to <code>api.log.1…N</code>.
+            </p>
+
+            <label className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" checked={logging.enabled} disabled={!loaded} onChange={e => editLogging({ enabled: e.target.checked })} />
+                <span>Write the file log</span>
+            </label>
+
+            {logging.enabled && (
+                <>
+                    <label htmlFor="log-level">Level</label>
+                    <select
+                        id="log-level"
+                        value={logging.level}
+                        disabled={!loaded}
+                        onChange={e => editLogging({ level: e.target.value as LogLevel })}
+                    >
+                        {LOG_LEVELS.map(l => (
+                            <option key={l.value} value={l.value}>
+                                {l.label}
+                            </option>
+                        ))}
+                    </select>
+
+                    <div className="row" style={{ gap: 8 }}>
+                        <div style={{ flex: 1 }}>
+                            <label htmlFor="log-size">Max file size (MB)</label>
+                            <input
+                                id="log-size"
+                                type="number"
+                                min={1}
+                                value={logging.maxSizeMb}
+                                disabled={!loaded}
+                                onChange={e => editLogging({ maxSizeMb: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                            <label htmlFor="log-files">Files to keep</label>
+                            <input
+                                id="log-files"
+                                type="number"
+                                min={1}
+                                value={logging.maxFiles}
+                                disabled={!loaded}
+                                onChange={e => editLogging({ maxFiles: Number(e.target.value) })}
+                            />
+                        </div>
+                    </div>
                 </>
             )}
 

@@ -50,16 +50,20 @@ describe('SettingsService (integration)', () => {
         // Defaults when empty.
         expect(await settings.syncCron()).toBe('0 */6 * * *');
         expect(await settings.notifications()).toEqual({ channel: 'none', throttleHours: 24 });
+        expect(await settings.logging()).toEqual({ enabled: true, level: 'info', maxSizeMb: 5, maxFiles: 5 });
 
         // Persist.
         await settings.setSyncCron('0 3 * * *');
         await settings.setNotifications({ channel: 'webhook', webhookUrl: 'https://hook.example/x' });
+        await settings.setLogging({ enabled: false, level: 'debug', maxSizeMb: 20 });
 
         // Read back (a fresh instance to prove it's the DB, not memory).
         const fresh = new SettingsService(db);
         expect(await fresh.all()).toEqual({
             syncCron: '0 3 * * *',
             notifications: { channel: 'webhook', throttleHours: 24, webhookUrl: 'https://hook.example/x' },
+            // A partial patch merged over the defaults: maxFiles kept its default.
+            logging: { enabled: false, level: 'debug', maxSizeMb: 20, maxFiles: 5 },
         });
 
         // Upsert overwrites.

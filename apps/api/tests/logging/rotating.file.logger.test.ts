@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Logger } from '@maroonedsoftware/logger';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RotatingFileLogger } from '../../src/modules/logging/rotating.file.logger.js';
+import { applyLoggingSettings } from '../../src/modules/logging/index.js';
 
 /** A spy Logger that records every call, used to assert mirroring. */
 function spyLogger(): Logger & { calls: Array<[string, unknown[]]> } {
@@ -105,6 +106,45 @@ describe('RotatingFileLogger', () => {
         expect(mirror.calls).toContainEqual(['info', ['to both', { k: 1 }]]);
         // The mirror decides its own level; the file logger forwards regardless.
         expect(mirror.calls).toContainEqual(['debug', ['dropped by level']]);
+    });
+
+    it('skips file writes when disabled but still mirrors', () => {
+        const mirror = spyLogger();
+        const logger = new RotatingFileLogger({ dir, enabled: false, mirror });
+        logger.error('while disabled');
+
+        expect(fs.existsSync(file('api.log'))).toBe(false);
+        expect(mirror.calls).toContainEqual(['error', ['while disabled']]);
+    });
+
+    it('configure() retunes level and enabled at runtime', () => {
+        const logger = new RotatingFileLogger({ dir, level: 'info' });
+        logger.debug('dropped at info');
+        logger.configure({ level: 'debug' });
+        logger.debug('kept at debug');
+        logger.configure({ enabled: false });
+        logger.info('dropped while disabled');
+        logger.configure({ enabled: true });
+        logger.info('kept again');
+
+        const content = read();
+        expect(content).not.toContain('dropped at info');
+        expect(content).toContain('kept at debug');
+        expect(content).not.toContain('dropped while disabled');
+        expect(content).toContain('kept again');
+    });
+
+    it('applyLoggingSettings maps DB settings (MB → bytes) onto the logger', () => {
+        const logger = new RotatingFileLogger({ dir, level: 'error', maxSizeBytes: 1_000_000 });
+        applyLoggingSettings(logger, { enabled: true, level: 'debug', maxSizeMb: 2, maxFiles: 3 });
+        logger.debug('now visible at debug');
+        expect(read()).toContain('now visible at debug');
+    });
+
+    it('applyLoggingSettings is a safe no-op for a non-file logger', () => {
+        const mirror = spyLogger();
+        // Should not throw for a logger that isn't a RotatingFileLogger.
+        expect(() => applyLoggingSettings(mirror, { enabled: false, level: 'warn', maxSizeMb: 1, maxFiles: 1 })).not.toThrow();
     });
 
     it('never throws out of a write when the append fails', () => {
