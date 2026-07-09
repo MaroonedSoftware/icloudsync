@@ -31,6 +31,9 @@ ENV PORT=8930
 ENV WEB_ROOT=/app/web
 # Default photo archive location; the entrypoint chowns this to PUID:PGID.
 ENV ICLOUD_PHOTOS_DIR=/data/photos
+# Default log directory. Must be a writable path for the dropped-privilege user,
+# NOT the root-owned /app/api — the entrypoint creates and chowns it to PUID:PGID.
+ENV LOG_DIR=/data/logs
 WORKDIR /app/api
 
 # gosu drops root → PUID:PGID in the entrypoint so backed-up files land with the

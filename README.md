@@ -149,7 +149,7 @@ does not embed a database. Set it up once before installing iCloud Sync:
    `POSTGRES_DB=icloudsync` on the Postgres container or create the database
    manually. A dedicated role is optional — the `postgres` superuser works.
 3. **Install iCloud Sync.** Add the container from the template at
-   [`docker/unraid-template.xml`](docker/unraid-template.xml) (Docker tab → Add
+   [`docker/icloudsync.xml`](docker/icloudsync.xml) (Docker tab → Add
    Container → Template, or add the raw URL as a private template repo). It pulls
    the prebuilt image `ghcr.io/maroonedsoftware/icloudsync:latest` and exposes
    these fields:
@@ -159,10 +159,16 @@ does not embed a database. Set it up once before installing iCloud Sync:
      `postgres://postgres:yourpassword@192.168.1.10:5432/icloudsync?sslmode=disable`
    - `ICLOUD_ENCRYPTION_SECRET` → a long random string (`openssl rand -hex 32`).
    - **Photos** path (container `/data/photos`) → a share, e.g.
-     `/mnt/user/photos/icloud`. This is the only persistent app volume.
+     `/mnt/user/photos/icloud`. This is the main persistent app volume.
+   - **Logs** path (container `/data/logs`) → a host path, default
+     `/mnt/user/appdata/icloudsync/logs`. Mapping it to a host path keeps the
+     rotating crash log (`api.log`) across container updates/restarts; leave it
+     unmapped and the log lives only in the container's ephemeral layer. Level
+     and rotation limits are set later in the WebUI (Settings → Logging).
    - `PUID` / `PGID` / `UMASK` (advanced) → default `99` / `100` / `022`
-     (Unraid's `nobody:users`). The entrypoint chowns the photos path to these
-     and drops privileges, so backed-up files land with the ownership you expect.
+     (Unraid's `nobody:users`). The entrypoint chowns the photos and logs paths
+     to these and drops privileges, so written files land with the ownership you
+     expect.
 
 Migrations run automatically on first start (dbmate), creating all tables in the
 `icloudsync` database. The container reports a Docker `HEALTHCHECK` (a DB-backed

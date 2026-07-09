@@ -28,5 +28,13 @@ mkdir -p "$PHOTOS_DIR"
 chown -R "$PUID:$PGID" "$PHOTOS_DIR" 2>/dev/null ||
     echo "WARN: could not chown $PHOTOS_DIR to $PUID:$PGID (continuing)" >&2
 
+# Same for the log directory, so the dropped-privilege user can write the rotating
+# log. The app degrades to console-only if this isn't writable, but preparing it
+# here keeps the file log working on the default (named-volume) setup.
+LOG_DIR="${LOG_DIR:-/data/logs}"
+mkdir -p "$LOG_DIR"
+chown -R "$PUID:$PGID" "$LOG_DIR" 2>/dev/null ||
+    echo "WARN: could not chown $LOG_DIR to $PUID:$PGID (continuing)" >&2
+
 echo "Starting iCloud Sync as ${PUID}:${PGID}…"
 exec gosu "$PUID:$PGID" "$@"

@@ -52,17 +52,21 @@ export interface RotatingFileLoggerConfig {
 export class RotatingFileLogger extends Logger {
     private readonly filePath: string;
     private readonly mirror?: Logger;
+    private readonly dir: string;
     private readonly now: () => Date;
     // Mutable so the settings UI can retune the logger at runtime (see {@link configure}).
     private enabled: boolean;
     private level: LogLevel;
     private maxSizeBytes: number;
     private maxFiles: number;
+    /** Whether the log directory is usable. `false` disables file writes so a bad path can never crash or spam. */
+    private dirReady = false;
     /** Cached active-file size so most writes avoid a `statSync`; refreshed on rotate. */
-    private size: number;
+    private size = 0;
 
     constructor(options: RotatingFileLoggerOptions) {
         super();
+        this.dir = options.dir;
         this.filePath = path.join(options.dir, options.fileName ?? 'api.log');
         this.enabled = options.enabled ?? true;
         this.level = options.level ?? 'info';
@@ -71,8 +75,11 @@ export class RotatingFileLogger extends Logger {
         this.mirror = options.mirror;
         this.now = options.now ?? (() => new Date());
 
-        fs.mkdirSync(options.dir, { recursive: true });
-        this.size = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).size : 0;
+        // File logging is a best-effort diagnostic: it must never be able to crash
+        // the app it is meant to observe. If the directory can't be created or read
+        // (e.g. an unwritable/read-only mount), disable file writes and keep going —
+        // the console mirror still carries every message to `docker logs`.
+        this.tryReadyDir();
     }
 
     /**
@@ -86,6 +93,21 @@ export class RotatingFileLogger extends Logger {
         if (config.level !== undefined) this.level = config.level;
         if (config.maxSizeBytes !== undefined) this.maxSizeBytes = Math.max(1, config.maxSizeBytes);
         if (config.maxFiles !== undefined) this.maxFiles = Math.max(1, Math.floor(config.maxFiles));
+        // Re-enabling from the UI after the directory was unavailable (e.g. the
+        // operator fixed permissions) should retry it, so file logging recovers
+        // without a restart.
+        if (this.enabled && !this.dirReady) this.tryReadyDir();
+    }
+
+    /** Attempt to (re)create the log directory; on success file writes resume, on failure they stay off. */
+    private tryReadyDir(): void {
+        try {
+            fs.mkdirSync(this.dir, { recursive: true });
+            this.size = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).size : 0;
+            this.dirReady = true;
+        } catch (error) {
+            this.reportUnavailable(error);
+        }
     }
 
     error(message: unknown, ...optionalParams: unknown[]): void {
@@ -114,7 +136,7 @@ export class RotatingFileLogger extends Logger {
     }
 
     private write(level: LogLevel, message: unknown, optionalParams: unknown[]): void {
-        if (!this.enabled || RANK[level] > RANK[this.level]) return;
+        if (!this.enabled || !this.dirReady || RANK[level] > RANK[this.level]) return;
 
         const parts = [message, ...optionalParams].map(part => format(part)).filter(part => part.length > 0);
         const line = `${this.now().toISOString()} ${level.toUpperCase().padEnd(5)} ${parts.join(' ')}\n`;
@@ -129,9 +151,18 @@ export class RotatingFileLogger extends Logger {
             this.size += bytes;
         } catch (error) {
             // A logger must never throw into the caller (least of all a crash
-            // handler). Surface the failure on the console and carry on.
-            console.error('RotatingFileLogger: failed to write log line', error);
+            // handler). If the very first write fails, stop trying (mark the dir
+            // unusable) so we don't spam the console for every subsequent line.
+            this.reportUnavailable(error);
         }
+    }
+
+    /** Turn file logging off after a filesystem failure and warn once, on the mirror (and console as a fallback). */
+    private reportUnavailable(error: unknown): void {
+        this.dirReady = false;
+        const note = `RotatingFileLogger: file logging disabled — cannot write to log directory ${this.dir}`;
+        if (this.mirror) this.mirror.warn(note, error);
+        else console.warn(note, error);
     }
 
     /** Roll `<name>` → `<name>.1` → … dropping the oldest, or truncate when only one file is kept. */

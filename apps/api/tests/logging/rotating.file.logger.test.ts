@@ -147,17 +147,51 @@ describe('RotatingFileLogger', () => {
         expect(() => applyLoggingSettings(mirror, { enabled: false, level: 'warn', maxSizeMb: 1, maxFiles: 1 })).not.toThrow();
     });
 
-    it('never throws out of a write when the append fails', () => {
+    it('does not throw when the log directory cannot be created; degrades to console-only', () => {
+        const mirror = spyLogger();
+        const mkdir = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {
+            throw Object.assign(new Error("EACCES: permission denied, mkdir '/app/api/logs'"), { code: 'EACCES' });
+        });
+
+        // Construction must not throw (this is the crash that took the app down).
+        const logger = new RotatingFileLogger({ dir: '/app/api/logs', mirror });
+        expect(() => logger.error('boom while dir is unwritable')).not.toThrow();
+
+        // The failure is reported once on the mirror, and the message still reaches it.
+        expect(mirror.calls.some(([level, args]) => level === 'warn' && String(args[0]).includes('file logging disabled'))).toBe(true);
+        expect(mirror.calls).toContainEqual(['error', ['boom while dir is unwritable']]);
+
+        mkdir.mockRestore();
+    });
+
+    it('recovers file logging when re-enabled after the directory becomes usable', () => {
+        const mkdir = vi.spyOn(fs, 'mkdirSync').mockImplementationOnce(() => {
+            throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        });
+        // First construction fails to ready the dir (mocked once), so writes are off.
         const logger = new RotatingFileLogger({ dir });
+        logger.info('dropped while dir unavailable');
+        expect(fs.existsSync(file('api.log'))).toBe(false);
+
+        // mkdir now works again (mock was once-only): re-enabling retries the dir.
+        logger.configure({ enabled: true });
+        logger.info('written after recovery');
+        expect(read('api.log')).toContain('written after recovery');
+
+        mkdir.mockRestore();
+    });
+
+    it('never throws out of a write when the append fails, and warns the mirror', () => {
+        const mirror = spyLogger();
+        const logger = new RotatingFileLogger({ dir, mirror });
         const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
             throw new Error('disk full');
         });
-        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
         expect(() => logger.error('boom')).not.toThrow();
-        expect(errorSpy).toHaveBeenCalled();
+        // The failure is surfaced on the mirror (the message itself still mirrors too).
+        expect(mirror.calls.some(([level, args]) => level === 'warn' && String(args[0]).includes('file logging disabled'))).toBe(true);
 
         spy.mockRestore();
-        errorSpy.mockRestore();
     });
 });

@@ -20,7 +20,7 @@
     <Overview>Self-hosted service that signs into iCloud, mirrors your Photos library into Postgres, and serves a web UI to browse it and trigger syncs. API, background sync worker, and UI run in one container.&#xD;&#xD;Requires a separate PostgreSQL container: set DATABASE_URL to its connection string. Set ICLOUD_ENCRYPTION_SECRET to a long random string (openssl rand -hex 32). Migrations run automatically on first start. Open the WebUI, sign in with your Apple ID, and complete 2FA once.</Overview>
     <Category>Backup: MediaApp:Photos Tools:</Category>
     <WebUI>http://[IP]:[PORT:8930]/</WebUI>
-    <TemplateURL>https://raw.githubusercontent.com/MaroonedSoftware/icloudsync/main/docker/unraid-template.xml</TemplateURL>
+    <TemplateURL>https://raw.githubusercontent.com/MaroonedSoftware/icloudsync/main/docker/icloudsync.xml</TemplateURL>
     <Icon>https://raw.githubusercontent.com/MaroonedSoftware/icloudsync/main/apps/web/public/icon.png</Icon>
     <ExtraParams/>
     <PostArgs/>
@@ -31,7 +31,9 @@
 
     <Config Name="WebUI Port" Target="8930" Default="8930" Mode="tcp" Description="Host port for the web UI and API. Change the left/host value to whatever is free on your server; the WebUI link follows it automatically." Type="Port" Display="always" Required="true" Mask="false">8930</Config>
 
-    <Config Name="Photos" Target="/data/photos" Default="/mnt/user/photos/icloud" Mode="rw" Description="Where the backed-up original photo files are written. The only persistent app volume — everything else (settings, encrypted session) lives in Postgres." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/photos/icloud</Config>
+    <Config Name="Photos" Target="/data/photos" Default="/mnt/user/photos/icloud" Mode="rw" Description="Where the backed-up original photo files are written. The main persistent app volume — settings and the encrypted session live in Postgres." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/photos/icloud</Config>
+
+    <Config Name="Logs" Target="/data/logs" Default="/mnt/user/appdata/icloudsync/logs" Mode="rw" Description="Where the rotating file log (api.log + api.log.1..N) is written. Persisting it to a host path means crash logs survive container updates/restarts. Level and rotation limits are set in the WebUI under Settings → Logging." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/icloudsync/logs</Config>
 
     <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="postgres://postgres:CHANGE_ME@HOST_IP:5432/icloudsync?sslmode=disable" Mode="" Description="Postgres connection string for your separate PostgreSQL container. Use the Unraid host LAN IP (or the container name on a shared custom network), NOT localhost." Type="Variable" Display="always" Required="true" Mask="false"></Config>
 
