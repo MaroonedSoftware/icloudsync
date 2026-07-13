@@ -10,9 +10,14 @@ import type { DB } from './kysely.js';
  *
  * Returns the `Kysely<DB>` for callers that want it directly (tests, bootstrap).
  * `connectionString` is supplied by the caller (from the resolved app config).
+ *
+ * `connectionTimeoutMillis` is set so a request-path query fails fast (with a
+ * clean error) when Postgres is briefly unavailable, rather than hanging on the
+ * pg default of `0` (wait forever) and letting stalled requests pile up during a
+ * DB blip. pg-boss already bounds its own pool at the same 10s.
  */
 export function registerData(registry: InjectKitRegistry, connectionString: string): Kysely<DB> {
-    const pool = new KyselyPool({ connectionString, types: KyselyPgTypeOverrides });
+    const pool = new KyselyPool({ connectionString, types: KyselyPgTypeOverrides, connectionTimeoutMillis: 10_000 });
     const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }), plugins: KyselyDefaultPlugins });
 
     registry.register(KyselyPool).useInstance(pool);

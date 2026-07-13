@@ -28,6 +28,23 @@ import { RelocateRegistry } from './relocate.registry.js';
 export { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 
 /**
+ * Subscribe to pg-boss's `error` event so a background failure cannot crash the
+ * process.
+ *
+ * `PgBoss` extends Node's `EventEmitter` and emits `error` for failures that
+ * happen off the request path — most commonly its periodic queue-cache refresh
+ * ({@link https://github.com/timgit/pg-boss `Manager.onCacheQueues`}) hitting a
+ * transient DB error such as `Connection terminated due to connection timeout`.
+ * Per the `EventEmitter` contract, an `error` event with **no listener** is
+ * re-thrown as `ERR_UNHANDLED_ERROR` and takes down the whole process. These
+ * errors are transient (pg-boss retries the cache on its next interval), so the
+ * correct handling is to log and swallow rather than tear the engine down.
+ */
+export function attachPgBossErrorHandler(pgboss: PgBoss, logger: Logger): void {
+    pgboss.on('error', error => logger.error('pg-boss background error', error));
+}
+
+/**
  * Register the photo-sync graph ({@link PhotosRepository} + {@link SyncPhotosJob})
  * into a registry. Expects `Kysely`, {@link ICloudService}, {@link SettingsService},
  * and {@link Logger} to already be registered (see {@link startPhotoSyncWorker}).
@@ -159,6 +176,7 @@ export interface SyncEngine {
  */
 export async function startSyncEngine(connectionString: string, logger: Logger, cron: string = DEFAULT_SYNC_CRON): Promise<SyncEngine> {
     const pgboss = new PgBoss(connectionString);
+    attachPgBossErrorHandler(pgboss, logger);
     await pgboss.start();
     const registrations = buildPhotoSyncRegistry(cron);
     for (const queue of [SYNC_PHOTOS_JOB, SYNC_SWEEP_JOB, RELOCATE_ARCHIVE_JOB]) {
@@ -226,7 +244,8 @@ export async function startPhotoSyncWorker(options: PhotoSyncWorkerOptions = {})
     const config = options.config ?? ICloudConfig.fromAppConfig(appConfig);
 
     const registry = createRegistry();
-    registry.register(Logger).useInstance(new ConsoleLogger());
+    const logger = new ConsoleLogger();
+    registry.register(Logger).useInstance(logger);
     const db = registerData(registry, connectionString);
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
@@ -237,6 +256,7 @@ export async function startPhotoSyncWorker(options: PhotoSyncWorkerOptions = {})
     const cron = options.cron ?? (await settings.syncCron());
 
     const pgboss = new PgBoss(connectionString);
+    attachPgBossErrorHandler(pgboss, logger);
     await pgboss.start();
 
     // The broker must be registered before the container is built: SweepPhotosJob
