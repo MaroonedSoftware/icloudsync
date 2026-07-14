@@ -127,7 +127,7 @@ export async function startApiServer(options: ApiServerOptions = {}): Promise<Ap
     // Expose the concrete file logger too, so the settings route can retune it live.
     if (logger instanceof RotatingFileLogger) registry.register(RotatingFileLogger).useInstance(logger);
     registerBodyParser(registry);
-    const db = registerData(registry, connectionString);
+    const db = registerData(registry, connectionString, logger);
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
 

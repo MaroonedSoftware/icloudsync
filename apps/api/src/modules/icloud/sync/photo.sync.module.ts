@@ -246,7 +246,7 @@ export async function startPhotoSyncWorker(options: PhotoSyncWorkerOptions = {})
     const registry = createRegistry();
     const logger = new ConsoleLogger();
     registry.register(Logger).useInstance(logger);
-    const db = registerData(registry, connectionString);
+    const db = registerData(registry, connectionString, logger);
     const settings = new SettingsService(db);
     registry.register(SettingsService).useInstance(settings);
     registry.register(AccountsService).useInstance(new AccountsService(db));
