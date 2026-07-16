@@ -12,7 +12,7 @@ import { z } from 'zod';
  * {@link databaseUrl}) normalise and validate these.
  */
 export interface AppConfigShape {
-    icloud: { photosDir?: string; encryptionSecret?: string; encryptionSalt?: string };
+    icloud: { photosDir?: string; encryptionSecret?: string; encryptionSalt?: string; thumbnailCacheMaxMb?: number | string };
     http: { port?: number | string };
     database: { url?: string };
     web: { root?: string };

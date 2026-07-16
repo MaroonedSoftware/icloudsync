@@ -5,6 +5,7 @@ import { parseAndValidate } from '@maroonedsoftware/zod';
 import { z } from 'zod';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { PhotoArchive } from '../icloud/storage/photo.archive.js';
+import { ThumbnailCache } from '../icloud/storage/thumbnail.cache.js';
 import { PhotosRepository } from '../icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../icloud/sync/sync.registry.js';
 import { SyncProgressRegistry } from '../icloud/sync/sync.progress.registry.js';
@@ -17,6 +18,16 @@ import { accountIdParam, withICloudErrors } from './route.helpers.js';
 /** Whether a rendition key refers to the full-resolution original (what the archive stores). */
 function isOriginal(resolution: string): boolean {
     return resolution.startsWith('resOriginal');
+}
+
+/**
+ * The inline MIME type for a derived rendition served to an `<img>`. Every JPEG
+ * rendition (`resJPEGThumb`, `resJPEGMedRes`, …) is `image/jpeg`; anything else
+ * falls back to a generic binary type (CloudKit's `fileType` is a UTI, not a MIME,
+ * so it isn't usable directly).
+ */
+function renditionContentType(resolution: string): string {
+    return resolution.startsWith('resJPEG') ? 'image/jpeg' : 'application/octet-stream';
 }
 
 /** An optional `?flag=true|false` query param (absent → undefined). */
@@ -82,7 +93,10 @@ function inFlightSyncJob(broker: JobBroker, registry: SyncRegistry, accountId: s
  *   `offset`, `favorite`, `includeHidden`, `includeDeleted`, `order`).
  * - `GET /icloud/accounts/:accountId/photos/:recordName` — one synced asset's metadata.
  * - `GET /icloud/accounts/:accountId/photos/:recordName/download?resolution=resOriginalRes` —
- *   stream a rendition's bytes through the API.
+ *   stream a rendition's bytes through the API. Originals are served as an
+ *   attachment, preferring the durable archived copy over a live iCloud fetch;
+ *   derived renditions (thumbnails/previews) are served inline and cached on disk
+ *   ({@link ThumbnailCache}) so they survive the CloudKit signed URL's expiry.
  * - `POST /icloud/accounts/:accountId/sync` — enqueue an on-demand sync of one
  *   account; body is an optional {@link SyncPhotosPayload} (`force: true` re-backs-up
  *   every asset, ignoring what's already stored). Returns `202 { queued: true, job, jobId }`.
@@ -108,7 +122,10 @@ export function icloudPhotosRouter() {
         // a sync has run); the UI uses it as the progress denominator so it doesn't
         // climb while a first sync pages metadata in.
         const libraryTotal = ctx.container.get(SyncProgressRegistry).libraryTotal(id) ?? null;
-        ctx.body = { id, schedule, running: jobId !== undefined, libraryTotal, ...stats };
+        // Whether thumbnails are served at all (disabled when the cache budget is 0),
+        // so the UI can hide the recent-backups grid rather than show broken images.
+        const thumbnails = ctx.container.get(ThumbnailCache).enabled;
+        ctx.body = { id, schedule, running: jobId !== undefined, libraryTotal, thumbnails, ...stats };
     });
 
     router.get('/icloud/accounts/:accountId/photos', async ctx => {
@@ -136,27 +153,64 @@ export function icloudPhotosRouter() {
         const photo = await repo.get(id, ctx.params.recordName ?? '');
         if (!photo) throw new HttpError(404).withDetails({ reason: 'photo_not_found' });
 
-        const filename = (photo.filename ?? photo.recordName).replace(/"/g, '');
-        ctx.set('Content-Disposition', `attachment; filename="${filename}"`);
-        ctx.type = 'application/octet-stream';
         // Renditions are immutable (content-addressed by checksum), so let the browser cache them.
         ctx.set('Cache-Control', 'private, max-age=86400');
 
-        // Prefer the durable archived copy of the original; fall back to a live iCloud fetch.
-        if (isOriginal(resolution) && photo.backupKey) {
-            try {
-                const stream = await ctx.container.get(PhotoArchive).read(photo.backupKey);
-                if (photo.backupSize != null) ctx.set('Content-Length', String(photo.backupSize));
-                ctx.body = stream;
-                return;
-            } catch {
-                // Archived copy unreadable (e.g. storage wiped) — fall through to a live fetch.
+        // Originals are downloads of the durable backup: serve the archived copy as
+        // an attachment when it exists, falling back to a live iCloud fetch.
+        if (isOriginal(resolution)) {
+            const filename = (photo.filename ?? photo.recordName).replace(/"/g, '');
+            ctx.set('Content-Disposition', `attachment; filename="${filename}"`);
+            ctx.type = 'application/octet-stream';
+            if (photo.backupKey) {
+                try {
+                    const stream = await ctx.container.get(PhotoArchive).read(photo.backupKey);
+                    if (photo.backupSize != null) ctx.set('Content-Length', String(photo.backupSize));
+                    ctx.body = stream;
+                    return;
+                } catch {
+                    // Archived copy unreadable (e.g. storage wiped) — fall through to a live fetch.
+                }
             }
+            const url = photo.resources[resolution]?.downloadURL;
+            if (!url) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
+            ctx.body = Buffer.from(await withICloudErrors(() => icloud.download(id, url)));
+            return;
         }
 
-        const url = photo.resources[resolution]?.downloadURL;
-        if (!url) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
-        ctx.body = Buffer.from(await withICloudErrors(() => icloud.download(id, url)));
+        // Derived renditions (grid thumbnails, previews) are served inline and cached
+        // on disk: the rendition's own iCloud `downloadURL` is a signed URL that
+        // expires within hours of a sync, so a read-through cache is what keeps
+        // thumbnails from decaying into broken images between syncs. Cache hit streams
+        // from disk; a miss fetches from iCloud, caches the bytes, then serves them.
+        const cache = ctx.container.get(ThumbnailCache);
+        // Thumbnails off (cache budget 0): don't fall back to an uncached live fetch
+        // (which would just re-expire) — refuse so the UI hides the grid instead.
+        if (!cache.enabled) throw new HttpError(404).withDetails({ reason: 'thumbnails_disabled' });
+
+        const rendition = photo.resources[resolution];
+        const cacheKey = cache.key(id, photo.recordName, resolution, rendition?.fileChecksum);
+        const contentType = renditionContentType(resolution);
+
+        const cached = await cache.read(cacheKey);
+        if (cached) {
+            ctx.type = contentType;
+            ctx.set('Content-Disposition', 'inline');
+            ctx.body = cached;
+            return;
+        }
+
+        if (!rendition?.downloadURL) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
+        const bytes = await withICloudErrors(() => icloud.download(id, rendition.downloadURL));
+        // Best-effort cache write — a storage hiccup must not fail the (successful) fetch.
+        try {
+            await cache.store(cacheKey, bytes, contentType);
+        } catch {
+            // Cache unavailable — serve the freshly-fetched bytes anyway.
+        }
+        ctx.type = contentType;
+        ctx.set('Content-Disposition', 'inline');
+        ctx.body = Buffer.from(bytes);
     });
 
     router.post('/icloud/accounts/:accountId/sync', json, async ctx => {

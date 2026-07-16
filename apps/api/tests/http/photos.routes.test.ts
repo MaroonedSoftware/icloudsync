@@ -11,6 +11,7 @@ import { registerBodyParser } from '../../src/modules/http/body.parser.js';
 import { createApiApp } from '../../src/modules/http/server.js';
 import { ICloudService } from '../../src/modules/icloud/icloud.service.js';
 import { PhotoArchive } from '../../src/modules/icloud/storage/photo.archive.js';
+import { ThumbnailCache } from '../../src/modules/icloud/storage/thumbnail.cache.js';
 import { PhotosRepository, type ListPhotosOptions, type ListPhotosResult, type PhotoStats, type SyncedPhoto } from '../../src/modules/icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../../src/modules/icloud/sync/sync.registry.js';
 import { SyncProgressRegistry } from '../../src/modules/icloud/sync/sync.progress.registry.js';
@@ -23,6 +24,24 @@ class FakeArchive {
         const bytes = this.files.get(key);
         if (!bytes) return Promise.reject(new Error(`no such key ${key}`));
         return Promise.resolve(Readable.from(Buffer.from(bytes)));
+    }
+}
+
+/** In-memory thumbnail cache stand-in mirroring {@link ThumbnailCache}'s read-through contract. */
+class FakeThumbnailCache {
+    readonly files = new Map<string, Uint8Array>();
+    enabled = true;
+    key(accountId: string, recordName: string, resolution: string, checksum?: string | null): string {
+        return `${accountId}/${recordName}/${resolution}${checksum ? `-${checksum}` : ''}`;
+    }
+    read(key: string): Promise<Readable | undefined> {
+        if (!this.enabled) return Promise.resolve(undefined);
+        const bytes = this.files.get(key);
+        return Promise.resolve(bytes ? Readable.from(Buffer.from(bytes)) : undefined);
+    }
+    store(key: string, bytes: Uint8Array): Promise<void> {
+        if (this.enabled) this.files.set(key, bytes);
+        return Promise.resolve();
     }
 }
 
@@ -124,6 +143,7 @@ describe('icloud photos routes', () => {
     let repo: FakeRepo;
     let broker: FakeBroker;
     let archive: FakeArchive;
+    let thumbnails: FakeThumbnailCache;
     let syncRegistry: SyncRegistry;
     let syncProgress: SyncProgressRegistry;
     let icloud: { download: (id: string, url: string) => Promise<Uint8Array>; listAccounts: () => Promise<Array<{ id: string; account: string }>> };
@@ -132,6 +152,7 @@ describe('icloud photos routes', () => {
         repo = new FakeRepo();
         broker = new FakeBroker();
         archive = new FakeArchive();
+        thumbnails = new FakeThumbnailCache();
         syncRegistry = new SyncRegistry();
         syncProgress = new SyncProgressRegistry();
         icloud = { download: async () => new Uint8Array([1, 2, 3]), listAccounts: async () => [{ id: ACCOUNT_ID, account: 'me@icloud.com' }] };
@@ -142,6 +163,7 @@ describe('icloud photos routes', () => {
         registry.register(ICloudService).useInstance(icloud as unknown as ICloudService);
         registry.register(PhotosRepository).useInstance(repo as unknown as PhotosRepository);
         registry.register(PhotoArchive).useInstance(archive as unknown as PhotoArchive);
+        registry.register(ThumbnailCache).useInstance(thumbnails as unknown as ThumbnailCache);
         registry.register(JobBroker).useInstance(broker as unknown as JobBroker);
         registry.register(SyncRegistry).useInstance(syncRegistry);
         registry.register(SyncProgressRegistry).useInstance(syncProgress);
@@ -156,7 +178,7 @@ describe('icloud photos routes', () => {
     it('reports backup stats with the schedule and running state', async () => {
         const res = await fetch(`${base}${acct}/stats`);
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ id: ACCOUNT_ID, schedule: '0 */6 * * *', running: false, libraryTotal: null, ...STATS });
+        expect(await res.json()).toEqual({ id: ACCOUNT_ID, schedule: '0 */6 * * *', running: false, libraryTotal: null, thumbnails: true, ...STATS });
     });
 
     it('reports the library total pulled at the last sync\'s start', async () => {
@@ -247,6 +269,64 @@ describe('icloud photos routes', () => {
         const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGFullRes`);
         expect(res.status).toBe(404);
         expect(await res.json()).toMatchObject({ details: { reason: 'rendition_not_found', resolution: 'resJPEGFullRes' } });
+    });
+
+    it('fetches a thumbnail from iCloud, serves it inline, and caches the bytes', async () => {
+        repo.getImpl = () =>
+            photo('A', {
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://content.icloud.com/A/thumb', fileChecksum: 'chk1' } },
+            });
+        const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/jpeg');
+        expect(res.headers.get('content-disposition')).toBe('inline');
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+        // The fetched bytes are now cached under the record+resolution+checksum key.
+        expect(thumbnails.files.get(`${ACCOUNT_ID}/A/resJPEGThumb-chk1`)).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it('serves a cached thumbnail without a live iCloud fetch', async () => {
+        thumbnails.files.set(`${ACCOUNT_ID}/A/resJPEGThumb-chk1`, new Uint8Array([7, 7, 7]));
+        repo.getImpl = () =>
+            photo('A', {
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://content.icloud.com/A/thumb', fileChecksum: 'chk1' } },
+            });
+        let liveCalled = false;
+        icloud.download = async () => {
+            liveCalled = true;
+            return new Uint8Array([1, 2, 3]);
+        };
+
+        const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/jpeg');
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([7, 7, 7]));
+        expect(liveCalled).toBe(false); // served from cache, not iCloud
+    });
+
+    it('reports thumbnails: false in stats when the cache is disabled', async () => {
+        thumbnails.enabled = false;
+        const res = await fetch(`${base}${acct}/stats`);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ thumbnails: false });
+    });
+
+    it('404s a thumbnail download when thumbnails are disabled, without hitting iCloud', async () => {
+        thumbnails.enabled = false;
+        repo.getImpl = () =>
+            photo('A', {
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://content.icloud.com/A/thumb' } },
+            });
+        let liveCalled = false;
+        icloud.download = async () => {
+            liveCalled = true;
+            return new Uint8Array([1, 2, 3]);
+        };
+
+        const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(res.status).toBe(404);
+        expect(await res.json()).toMatchObject({ details: { reason: 'thumbnails_disabled' } });
+        expect(liveCalled).toBe(false);
     });
 
     it('maps an upstream download failure to 502', async () => {

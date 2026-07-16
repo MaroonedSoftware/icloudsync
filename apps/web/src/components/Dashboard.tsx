@@ -167,7 +167,9 @@ export function Dashboard({ id, account, onChanged }: { id: string; account: str
                     <h2>Recent backups</h2>
                     {stats && <span className="muted">{count(stats.total)} total</span>}
                 </div>
-                {recent === undefined ? (
+                {stats && !stats.thumbnails ? (
+                    <div className="empty">Thumbnails are disabled (THUMBNAIL_CACHE_MAX_MB=0).</div>
+                ) : recent === undefined ? (
                     <div className="spinner">Loading…</div>
                 ) : recent.length === 0 ? (
                     <div className="empty">Nothing backed up yet. Run a sync to get started.</div>

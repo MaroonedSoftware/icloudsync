@@ -137,6 +137,8 @@ export interface Stats {
     running: boolean;
     /** The iCloud library's asset count, pulled at the last sync's start, or `null` if no sync has run. Used as the backup-progress denominator. */
     libraryTotal: number | null;
+    /** Whether the server serves thumbnails (disabled when the thumbnail-cache budget is 0). */
+    thumbnails: boolean;
     total: number;
     favorites: number;
     /** Assets whose original bytes are archived to storage. */

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { EncryptionProvider } from '@maroonedsoftware/encryption';
 import { DiskStorageProvider, DiskStorageProviderOptions, StorageProvider } from '@maroonedsoftware/storage';
 import type { InjectKitRegistry } from 'injectkit';
@@ -8,6 +9,7 @@ import { ICloudConfig } from './icloud.config.js';
 import { ICloudService } from './icloud.service.js';
 import { AccountSessionStore } from './storage/account.session.store.js';
 import { PhotoArchive } from './storage/photo.archive.js';
+import { THUMBNAIL_CACHE_DIR, ThumbnailCache } from './storage/thumbnail.cache.js';
 
 /** `app_settings` key the Argon2id salt is persisted under (not secret). */
 const SALT_KEY = 'icloud_encryption_salt';
@@ -58,7 +60,8 @@ async function deriveEncryption(db: Kysely<DB>, config: ICloudConfig): Promise<E
  * The encrypted session lives on each account's `icloud_accounts` row (via
  * {@link AccountSessionStore}), so this only needs the `db`; there is no session
  * filesystem or blob store. `photoStorage` holds the backed-up photo bytes and
- * defaults to local disk under `config.photosDir`.
+ * defaults to local disk under `config.photosDir`; `thumbnailStorage` backs the
+ * bounded {@link ThumbnailCache} and defaults to a dedicated subdirectory of it.
  *
  * ```ts
  * const registry = createRegistry();
@@ -72,6 +75,9 @@ export async function registerICloud(
     config: ICloudConfig,
     db: Kysely<DB>,
     photoStorage: StorageProvider = new DiskStorageProvider(new DiskStorageProviderOptions({ rootDir: config.photosDir })),
+    // The thumbnail cache lives under its own root (a subdirectory of the photos
+    // dir) so eviction lists only cached thumbnails, never the durable archive.
+    thumbnailStorage: StorageProvider = new DiskStorageProvider(new DiskStorageProviderOptions({ rootDir: join(config.photosDir, THUMBNAIL_CACHE_DIR) })),
 ): Promise<void> {
     const encryption = await deriveEncryption(db, config);
     const sessionStoreFor = (accountId: string): AccountSessionStore => new AccountSessionStore(db, encryption, accountId);
@@ -80,6 +86,7 @@ export async function registerICloud(
     registry.register(StorageProvider).useInstance(photoStorage);
     registry.register(EncryptionProvider).useInstance(encryption);
     registry.register(PhotoArchive).useInstance(new PhotoArchive(photoStorage));
+    registry.register(ThumbnailCache).useInstance(new ThumbnailCache(thumbnailStorage, config.thumbnailCacheMaxBytes));
     registry
         .register(ICloudService)
         .useFactory(container => new ICloudService(sessionStoreFor, container.get(AccountsService)))

@@ -34,6 +34,9 @@ services:
             # Rotating crash/diagnostic log, on its own volume so it survives the
             # container restarts it exists to explain.
             LOG_DIR: /data/logs
+            # Max size (MiB) of the recent-backups thumbnail cache (default 10).
+            # Set to 0 to disable thumbnails entirely.
+            THUMBNAIL_CACHE_MAX_MB: ${THUMBNAIL_CACHE_MAX_MB:-10}
             # Account, photo layout, sync schedule, and the encrypted session all
             # live in the database — configured in the web UI, not via env vars.
         volumes:

@@ -25,7 +25,16 @@ const schema = z.object({
     encryptionSecret: z.preprocess(emptyToUndefined, z.string().min(8)),
     /** Optional hex-encoded Argon2id salt; auto-managed in the database when omitted. */
     encryptionSalt: z.preprocess(emptyToUndefined, z.string().optional()),
+    /**
+     * Cap on the on-disk thumbnail cache's footprint, in MiB (default 10). `0`
+     * disables thumbnails entirely — the download proxy stops serving derived
+     * renditions and the UI hides the recent-backups grid.
+     */
+    thumbnailCacheMaxMb: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).default(10)),
 });
+
+/** Bytes per MiB, for converting the MiB-denominated thumbnail-cache budget. */
+const BYTES_PER_MB = 1024 * 1024;
 
 /** Raw (pre-validation) input accepted by {@link ICloudConfig}; matches the env/`icloud` section shape. */
 export type ICloudConfigValues = z.input<typeof schema>;
@@ -39,12 +48,15 @@ export class ICloudConfig {
     readonly photosDir: string;
     readonly encryptionSecret: string;
     readonly encryptionSalt?: string;
+    /** Thumbnail-cache footprint cap in bytes (converted from `thumbnailCacheMaxMb`); `0` disables thumbnails. */
+    readonly thumbnailCacheMaxBytes: number;
 
     constructor(values: ICloudConfigValues) {
         const parsed = schema.parse(values);
         this.photosDir = parsed.photosDir;
         this.encryptionSecret = parsed.encryptionSecret;
         this.encryptionSalt = parsed.encryptionSalt;
+        this.thumbnailCacheMaxBytes = parsed.thumbnailCacheMaxMb * BYTES_PER_MB;
     }
 
     /** Build from the `icloud` section of a resolved {@link AppConfig}. */

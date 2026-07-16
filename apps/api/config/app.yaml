@@ -13,6 +13,10 @@ icloud:
   photosDir: "${env:ICLOUD_PHOTOS_DIR}"
   encryptionSecret: "${env:ICLOUD_ENCRYPTION_SECRET}"
   encryptionSalt: "${env:ICLOUD_ENCRYPTION_SALT}"
+  # Max size (MiB) of the on-disk recent-backups thumbnail cache. Default: 10.
+  # Set to 0 to disable thumbnails entirely (no derived renditions are served or
+  # cached, and the UI hides the recent-backups grid).
+  thumbnailCacheMaxMb: "${env:THUMBNAIL_CACHE_MAX_MB}"
 http:
   port: "${env:PORT}"
 database:

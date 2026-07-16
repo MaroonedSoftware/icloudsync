@@ -47,4 +47,28 @@ describe('ICloudConfig', () => {
     it('rejects an empty-string encryption secret (treated as missing)', () => {
         expect(() => new ICloudConfig({ encryptionSecret: '' })).toThrow();
     });
+
+    it('defaults the thumbnail-cache budget to 10 MiB when unset', () => {
+        const config = new ICloudConfig({ encryptionSecret: 'a-strong-secret' });
+        expect(config.thumbnailCacheMaxBytes).toBe(10 * 1024 * 1024);
+    });
+
+    it('treats an empty-string thumbnail-cache size as unset and applies the default', () => {
+        const config = new ICloudConfig({ encryptionSecret: 'a-strong-secret', thumbnailCacheMaxMb: '' });
+        expect(config.thumbnailCacheMaxBytes).toBe(10 * 1024 * 1024);
+    });
+
+    it('converts an explicit thumbnail-cache size (MiB) to bytes', () => {
+        const config = new ICloudConfig({ encryptionSecret: 'a-strong-secret', thumbnailCacheMaxMb: '25' });
+        expect(config.thumbnailCacheMaxBytes).toBe(25 * 1024 * 1024);
+    });
+
+    it('allows 0 to disable thumbnails (zero-byte budget)', () => {
+        const config = new ICloudConfig({ encryptionSecret: 'a-strong-secret', thumbnailCacheMaxMb: 0 });
+        expect(config.thumbnailCacheMaxBytes).toBe(0);
+    });
+
+    it('rejects a negative thumbnail-cache size', () => {
+        expect(() => new ICloudConfig({ encryptionSecret: 'a-strong-secret', thumbnailCacheMaxMb: -1 })).toThrow();
+    });
 });

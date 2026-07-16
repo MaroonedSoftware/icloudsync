@@ -39,6 +39,8 @@
 
     <Config Name="ICLOUD_ENCRYPTION_SECRET" Target="ICLOUD_ENCRYPTION_SECRET" Default="" Mode="" Description="Secret used to derive the AES key that encrypts the stored iCloud session. Use a long random string (openssl rand -hex 32). Changing it forces a re-login." Type="Variable" Display="always" Required="true" Mask="true"></Config>
 
+    <Config Name="THUMBNAIL_CACHE_MAX_MB" Target="THUMBNAIL_CACHE_MAX_MB" Default="10" Mode="" Description="Max size (in MiB) of the on-disk cache behind the WebUI's 'Recent backups' thumbnail grid. Thumbnails are small, so the default 10 holds plenty; the oldest are evicted once the cache fills. Set to 0 to disable thumbnails entirely — no thumbnail bytes are fetched or stored and the grid is hidden." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+
     <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that should own the backed-up photo files. 99 = Unraid 'nobody'." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
 
     <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that should own the backed-up photo files. 100 = Unraid 'users'." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
