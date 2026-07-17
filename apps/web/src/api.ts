@@ -285,6 +285,24 @@ export function thumbnailResolution(photo: Photo): string | undefined {
     return THUMB_PREFERENCE.find(k => k in photo.resources) ?? keys[0];
 }
 
+/**
+ * Resolution keys in descending quality — the largest browser-viewable rendition
+ * first. Deliberately excludes the originals: they're often HEIC (which browsers
+ * can't display) and are served as an attachment, whereas these JPEG/video
+ * renditions are served inline from the on-disk thumbnail cache.
+ */
+const PREVIEW_PREFERENCE = ['resJPEGFullRes', 'resJPEGMedRes', 'resVidMedRes', 'resJPEGThumb'];
+
+/**
+ * Pick the rendition to open when a thumbnail is clicked: the largest viewable
+ * JPEG/video present, so the photo opens inline from the on-disk cache rather
+ * than downloading the original or re-fetching from iCloud. Falls back to the
+ * grid thumbnail when no preview-grade rendition exists.
+ */
+export function previewResolution(photo: Photo): string | undefined {
+    return PREVIEW_PREFERENCE.find(k => k in photo.resources) ?? thumbnailResolution(photo);
+}
+
 /** Same-origin download URL for an account's rendition, served by the API's download proxy. */
 export function downloadUrl(id: string, recordName: string, resolution: string): string {
     return `${accountPath(id)}/photos/${encodeURIComponent(recordName)}/download?resolution=${encodeURIComponent(resolution)}`;

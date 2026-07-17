@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, api, downloadUrl, thumbnailResolution, type Photo, type PhotoResource } from '../src/api';
+import { ApiError, api, downloadUrl, previewResolution, thumbnailResolution, type Photo, type PhotoResource } from '../src/api';
 
 /** Build a minimal `Response`-like stub matching the fields `request()` reads. */
 function fakeResponse(opts: {
@@ -159,6 +159,31 @@ describe('thumbnailResolution', () => {
 
     it('falls back to the first available key when none are in the preference list', () => {
         expect(thumbnailResolution(photoWith(['resWeirdCustom']))).toBe('resWeirdCustom');
+    });
+});
+
+describe('previewResolution', () => {
+    const photoWith = (keys: string[]): Photo => ({
+        recordName: 'r',
+        masterRecordName: null,
+        filename: null,
+        assetDate: null,
+        addedDate: null,
+        isFavorite: false,
+        isHidden: false,
+        isDeleted: false,
+        resources: Object.fromEntries(keys.map(k => [k, { key: k, downloadURL: '' } as PhotoResource])),
+        syncedAt: '',
+    });
+
+    it('prefers the largest viewable JPEG, never the original', () => {
+        expect(previewResolution(photoWith(['resOriginalRes', 'resJPEGThumb', 'resJPEGMedRes', 'resJPEGFullRes']))).toBe('resJPEGFullRes');
+        expect(previewResolution(photoWith(['resOriginalRes', 'resJPEGThumb', 'resJPEGMedRes']))).toBe('resJPEGMedRes');
+    });
+
+    it('falls back to the grid thumbnail when no preview-grade rendition exists', () => {
+        expect(previewResolution(photoWith(['resWeirdCustom']))).toBe('resWeirdCustom');
+        expect(previewResolution(photoWith([]))).toBeUndefined();
     });
 });
 

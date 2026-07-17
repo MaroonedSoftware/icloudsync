@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, downloadUrl, thumbnailResolution, type Photo, type Stats } from '../api.js';
+import { api, downloadUrl, previewResolution, thumbnailResolution, type Photo, type Stats } from '../api.js';
 import { bytes, count, relativeTime, scheduleLabel } from '../format.js';
 import { AccountStorage } from './AccountStorage.js';
 import { Settings } from './Settings.js';
@@ -209,10 +209,13 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function Thumb({ accountId, photo }: { accountId: string; photo: Photo }) {
     const thumb = thumbnailResolution(photo);
-    const full = 'resOriginalRes' in photo.resources ? 'resOriginalRes' : thumb;
+    // Open a viewable JPEG/video preview served inline from the on-disk cache,
+    // not the (often HEIC) original — so a click shows the photo without a
+    // download or an iCloud round-trip.
+    const preview = previewResolution(photo);
     if (!thumb) return null;
     return (
-        <a className="thumb" href={full ? downloadUrl(accountId, photo.recordName, full) : undefined} target="_blank" rel="noreferrer"
+        <a className="thumb" href={preview ? downloadUrl(accountId, photo.recordName, preview) : undefined} target="_blank" rel="noreferrer"
             title={photo.filename ?? photo.recordName}>
             <img loading="lazy" src={downloadUrl(accountId, photo.recordName, thumb)} alt={photo.filename ?? photo.recordName} />
             {photo.isFavorite && <span className="fav">★</span>}
