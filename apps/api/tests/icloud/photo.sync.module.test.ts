@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_SYNC_CRON, SYNC_QUEUE_POLICY, buildPhotoSyncRegistry } from '../../src/modules/icloud/sync/photo.sync.module.js';
+import type { Logger } from '@maroonedsoftware/logger';
+import { PgBoss } from 'pg-boss';
+import { describe, expect, it, vi } from 'vitest';
+import {
+    DEFAULT_SYNC_CRON,
+    PGBOSS_APPLICATION_NAME,
+    PGBOSS_POOL_MAX,
+    SYNC_QUEUE_POLICY,
+    attachPgBossErrorHandler,
+    buildPhotoSyncRegistry,
+    createPgBoss,
+} from '../../src/modules/icloud/sync/photo.sync.module.js';
 import { SYNC_PHOTOS_JOB, SyncPhotosJob } from '../../src/modules/icloud/sync/sync.photos.job.js';
 import { SYNC_SWEEP_JOB, SweepPhotosJob } from '../../src/modules/icloud/sync/sync.dispatch.js';
 import { RELOCATE_ARCHIVE_JOB, RelocateArchiveJob } from '../../src/modules/icloud/sync/relocate.archive.job.js';
+
+function fakeLogger(): Logger & { error: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> } {
+    return { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn() } as never;
+}
 
 describe('buildPhotoSyncRegistry', () => {
     it('registers the per-account job on-demand (no cron)', () => {
@@ -52,5 +66,47 @@ describe('SYNC_QUEUE_POLICY', () => {
     it('tolerates more restart/expiry cycles than pg-boss default (2)', () => {
         // Each restart or expiry consumes a retry; the budget must exceed the default.
         expect(SYNC_QUEUE_POLICY.retryLimit).toBeGreaterThan(2);
+    });
+});
+
+describe('createPgBoss', () => {
+    it('constructs a PgBoss engine from a connection string without connecting', () => {
+        // The constructor only stores config (it connects on start()), so this is safe
+        // to build in a unit test.
+        const pgboss = createPgBoss('postgres://user:pass@localhost:5432/db');
+        expect(pgboss).toBeInstanceOf(PgBoss);
+    });
+
+    it('pins an explicit, identifiable connection budget', () => {
+        // These feed the pool config so the app's connection demand is documented and
+        // its connections are greppable in pg_stat_activity.
+        expect(PGBOSS_POOL_MAX).toBe(10);
+        expect(PGBOSS_APPLICATION_NAME).toBe('icloudsync-pgboss');
+    });
+});
+
+describe('attachPgBossErrorHandler', () => {
+    it("swallows pg-boss 'error' events so a background failure cannot crash the process", () => {
+        const logger = fakeLogger();
+        const pgboss = createPgBoss('postgres://user:pass@localhost:5432/db');
+        attachPgBossErrorHandler(pgboss, logger);
+
+        // Without a listener, EventEmitter re-throws an 'error' event as ERR_UNHANDLED_ERROR
+        // and takes the process down. The handler must catch it.
+        expect(() => pgboss.emit('error', new Error('boom'))).not.toThrow();
+    });
+
+    it('logs a transient connectivity blip at WARN, a genuine error at ERROR', () => {
+        const logger = fakeLogger();
+        const pgboss = createPgBoss('postgres://user:pass@localhost:5432/db');
+        attachPgBossErrorHandler(pgboss, logger);
+
+        pgboss.emit('error', new Error('Connection terminated due to connection timeout'));
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.error).not.toHaveBeenCalled();
+
+        const genuine = new Error('relation "job" does not exist');
+        pgboss.emit('error', genuine);
+        expect(logger.error).toHaveBeenCalledWith('pg-boss background error', genuine);
     });
 });

@@ -8,7 +8,7 @@ import { PgBoss } from 'pg-boss';
 import type { AppConfig } from '@maroonedsoftware/appconfig';
 import { AccountsService } from '../../accounts/accounts.service.js';
 import { databaseUrl, loadAppConfig, type AppConfigShape } from '../../config/app.config.js';
-import { registerData } from '../../data/data.module.js';
+import { logDbBackgroundError, registerData } from '../../data/data.module.js';
 import type { DB } from '../../data/kysely.js';
 import { SettingsService } from '../../settings/settings.service.js';
 import { NotificationsService, registerNotifications } from '../../notifications/index.js';
@@ -28,6 +28,29 @@ import { RelocateRegistry } from './relocate.registry.js';
 export { DEFAULT_SYNC_CRON } from './sync.defaults.js';
 
 /**
+ * pg-boss's server-connection budget, pinned to pg-boss's own default (10) so it
+ * is documented rather than implicit. Combined with the Kysely pool's
+ * {@link KYSELY_POOL_MAX}, this process opens at most `10 + 10` server
+ * connections to Postgres; that sum is what Postgres's `max_connections` (or a
+ * fronting pooler's pool size) must accommodate for this app.
+ */
+export const PGBOSS_POOL_MAX = 10;
+
+/** `application_name` for pg-boss's connections (see {@link KYSELY_APPLICATION_NAME}). */
+export const PGBOSS_APPLICATION_NAME = 'icloudsync-pgboss';
+
+/**
+ * Construct the pg-boss engine with an explicit, identifiable connection budget:
+ * a pinned pool {@link PGBOSS_POOL_MAX max}, an {@link PGBOSS_APPLICATION_NAME
+ * application_name} so its connections are distinguishable in `pg_stat_activity`,
+ * and a 10s connect timeout so a database blip fails fast and retries (matching
+ * the Kysely pool) instead of hanging.
+ */
+export function createPgBoss(connectionString: string): PgBoss {
+    return new PgBoss({ connectionString, max: PGBOSS_POOL_MAX, application_name: PGBOSS_APPLICATION_NAME, connectionTimeoutMillis: 10_000 });
+}
+
+/**
  * Subscribe to pg-boss's `error` event so a background failure cannot crash the
  * process.
  *
@@ -39,9 +62,11 @@ export { DEFAULT_SYNC_CRON } from './sync.defaults.js';
  * re-thrown as `ERR_UNHANDLED_ERROR` and takes down the whole process. These
  * errors are transient (pg-boss retries the cache on its next interval), so the
  * correct handling is to log and swallow rather than tear the engine down.
+ * {@link logDbBackgroundError} keeps a database blip from flooding the log at
+ * ERROR by logging the transient connectivity cases at WARN.
  */
 export function attachPgBossErrorHandler(pgboss: PgBoss, logger: Logger): void {
-    pgboss.on('error', error => logger.error('pg-boss background error', error));
+    pgboss.on('error', error => logDbBackgroundError(logger, 'pg-boss', error));
 }
 
 /**
@@ -175,7 +200,7 @@ export interface SyncEngine {
  * worker), skip `startConsumer` and run {@link startPhotoSyncWorker} elsewhere.
  */
 export async function startSyncEngine(connectionString: string, logger: Logger, cron: string = DEFAULT_SYNC_CRON): Promise<SyncEngine> {
-    const pgboss = new PgBoss(connectionString);
+    const pgboss = createPgBoss(connectionString);
     attachPgBossErrorHandler(pgboss, logger);
     await pgboss.start();
     const registrations = buildPhotoSyncRegistry(cron);
@@ -255,7 +280,7 @@ export async function startPhotoSyncWorker(options: PhotoSyncWorkerOptions = {})
 
     const cron = options.cron ?? (await settings.syncCron());
 
-    const pgboss = new PgBoss(connectionString);
+    const pgboss = createPgBoss(connectionString);
     attachPgBossErrorHandler(pgboss, logger);
     await pgboss.start();
 
