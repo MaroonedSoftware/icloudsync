@@ -171,6 +171,22 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
         return new Map(rows.map(r => [r.recordName, { checksum: r.backupChecksum, key: r.backupKey }]));
     }
 
+    /**
+     * Overwrite one asset's renditions in place — used by the download proxy to
+     * persist freshly re-looked-up, non-expired `downloadURL`s so later requests
+     * (and other renditions of the same asset) don't re-hit the expired ones. Only
+     * the `resources` column is touched; `syncedAt` and backup columns are left as
+     * they were, since this isn't a content change.
+     */
+    async updateResources(accountId: string, recordName: string, resources: Record<string, PhotoResource>): Promise<void> {
+        await this.db
+            .updateTable('icloudPhotos')
+            .set({ resources: sql<Json>`${JSON.stringify(resources)}::jsonb` })
+            .where('accountId', '=', accountId)
+            .where('recordName', '=', recordName)
+            .execute();
+    }
+
     async markBackedUp(accountId: string, recordName: string, backup: BackupRecord): Promise<void> {
         await this.db
             .updateTable('icloudPhotos')

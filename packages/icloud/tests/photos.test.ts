@@ -133,6 +133,44 @@ describe('PhotosService', () => {
         expect(downloads).toEqual(['https://p-content.icloud.com/master-1-orig']);
     });
 
+    it('re-looks-up records and rebuilds the asset with fresh rendition URLs', async () => {
+        const calls: Array<{ pathname: string; body: any }> = [];
+        const requester: ICloudRequester = {
+            serviceUrl: name => (name === 'ckdatabasews' ? 'https://p01-ckdatabasews.icloud.com:443' : undefined),
+            async request<T>(_url: string, pathname: string, init?: RequestInit & { json?: unknown }): Promise<HttpResponse<T>> {
+                calls.push({ pathname, body: init?.json });
+                return ok({ records: [assetRecord('asset-1', 'master-1', 'first.jpg', true), masterRecord('master-1')] }) as HttpResponse<T>;
+            },
+            async download() {
+                return new Uint8Array();
+            },
+        };
+
+        const asset = await new PhotosService(requester).lookup(['asset-1', 'master-1']);
+        expect(asset!.recordName).toBe('asset-1');
+        expect(asset!.masterRecordName).toBe('master-1');
+        // Fresh URLs from both the master (original) and asset (derived) records.
+        expect(asset!.resources.resOriginalRes?.downloadURL).toBe('https://p-content.icloud.com/master-1-orig');
+        expect(asset!.resources.resJPEGMedRes?.downloadURL).toBe('https://cvws.icloud.com/asset-1-med');
+        // Issued a records/lookup carrying the requested record names.
+        const lookup = calls.find(c => c.pathname.includes('records/lookup'));
+        expect(lookup!.body.records).toEqual([{ recordName: 'asset-1' }, { recordName: 'master-1' }]);
+    });
+
+    it('returns undefined when a lookup resolves no asset/master records', async () => {
+        const requester: ICloudRequester = {
+            serviceUrl: name => (name === 'ckdatabasews' ? 'https://p01-ckdatabasews.icloud.com:443' : undefined),
+            async request<T>(): Promise<HttpResponse<T>> {
+                return ok({ records: [] }) as HttpResponse<T>;
+            },
+            async download() {
+                return new Uint8Array();
+            },
+        };
+        expect(await new PhotosService(requester).lookup(['nope'])).toBeUndefined();
+        expect(await new PhotosService(requester).lookup([])).toBeUndefined();
+    });
+
     it('throws when ckdatabasews is unavailable', async () => {
         const requester: ICloudRequester = {
             serviceUrl: () => undefined,

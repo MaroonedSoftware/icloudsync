@@ -292,6 +292,29 @@ export class PhotosService {
         return assets;
     }
 
+    /**
+     * Re-fetch specific records (`records/lookup`) and rebuild the asset they
+     * describe. Used to obtain **fresh** rendition `downloadURL`s for a single
+     * asset, since CloudKit's signed URLs expire within hours of a sync. Pass the
+     * asset's `recordName` together with its `masterRecordName` so both the derived
+     * (CPLAsset) and original (CPLMaster) renditions come back; error/placeholder
+     * records in the response are ignored. Returns `undefined` when neither record
+     * resolves (e.g. the asset was deleted upstream).
+     */
+    async lookup(recordNames: string[]): Promise<PhotoAsset | undefined> {
+        if (recordNames.length === 0) return undefined;
+        const data = await this.query<{ records?: CloudKitRecord[] }>('records/lookup', {
+            records: recordNames.map(recordName => ({ recordName })),
+            zoneID: { zoneName: this.zoneName },
+        });
+        const records = data.records ?? [];
+        const master = records.find(r => r.recordType === 'CPLMaster');
+        const asset = records.find(r => r.recordType === 'CPLAsset');
+        const primary = master ?? asset;
+        if (!primary) return undefined;
+        return buildPhotoAsset(primary, asset);
+    }
+
     /** The download URL for a given rendition (defaults to the original). */
     resolveDownloadUrl(asset: PhotoAsset, resolution = 'resOriginalRes'): string | undefined {
         return asset.resources[resolution]?.downloadURL;

@@ -2,11 +2,13 @@ import { HttpError } from '@maroonedsoftware/errors';
 import { JobBroker } from '@maroonedsoftware/jobbroker';
 import { ServerKitRouter, bodyParserMiddleware } from '@maroonedsoftware/koa';
 import { parseAndValidate } from '@maroonedsoftware/zod';
+import { ICloudError } from '@icloudsync/icloud';
+import type { PhotoResource } from '@icloudsync/icloud';
 import { z } from 'zod';
 import { ICloudService } from '../icloud/icloud.service.js';
 import { PhotoArchive } from '../icloud/storage/photo.archive.js';
 import { ThumbnailCache } from '../icloud/storage/thumbnail.cache.js';
-import { PhotosRepository } from '../icloud/sync/photos.repository.js';
+import { PhotosRepository, type SyncedPhoto } from '../icloud/sync/photos.repository.js';
 import { SyncRegistry } from '../icloud/sync/sync.registry.js';
 import { SyncProgressRegistry } from '../icloud/sync/sync.progress.registry.js';
 import { SYNC_PHOTOS_JOB } from '../icloud/sync/sync.photos.job.js';
@@ -45,6 +47,44 @@ function renditionContentType(resolution: string, fileType?: string): string {
     if (resolution.startsWith('resJPEG')) return 'image/jpeg';
     if (resolution.startsWith('resVid')) return 'video/mp4';
     return (fileType && UTI_CONTENT_TYPES[fileType]) || 'application/octet-stream';
+}
+
+/** Content-server statuses that mean the CloudKit signed URL is stale and a fresh one should be fetched. */
+const STALE_URL_STATUSES = new Set([401, 403, 410]);
+
+/** Whether a download error is a stale/expired signed-URL rejection (vs. a genuine upstream failure). */
+function isStaleUrlError(error: unknown): boolean {
+    return error instanceof ICloudError && error.status !== undefined && STALE_URL_STATUSES.has(error.status);
+}
+
+/**
+ * Fetch a rendition's bytes through the account's session, healing an expired
+ * CloudKit signed URL on the fly. The stored `downloadURL` is tried first; if the
+ * content server rejects it as stale (401/403/410), the asset is re-looked-up for
+ * fresh URLs, the refreshed renditions are persisted (so later requests skip the
+ * round-trip), and the download is retried once with the fresh URL. Throws HTTP
+ * 404 when the rendition isn't present, and rethrows the original error when a
+ * refresh can't produce a working URL (so it still maps to a 502).
+ */
+async function downloadRendition(icloud: ICloudService, repo: PhotosRepository, id: string, photo: SyncedPhoto, resolution: string): Promise<Uint8Array> {
+    const url = photo.resources[resolution]?.downloadURL;
+    if (!url) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
+    try {
+        return await icloud.download(id, url);
+    } catch (error) {
+        if (!isStaleUrlError(error)) throw error;
+        // Expired signed URL — re-look-up the record for fresh URLs and retry once.
+        let fresh: Record<string, PhotoResource> | undefined;
+        try {
+            fresh = await icloud.refreshRenditions(id, photo.recordName, photo.masterRecordName ?? undefined);
+        } catch {
+            throw error; // refresh itself failed — surface the original stale-URL error
+        }
+        const freshUrl = fresh?.[resolution]?.downloadURL;
+        if (!freshUrl) throw error; // asset gone, or the rendition no longer exists
+        await repo.updateResources(id, photo.recordName, fresh!);
+        return await icloud.download(id, freshUrl);
+    }
 }
 
 /** An optional `?flag=true|false` query param (absent → undefined). */
@@ -189,9 +229,7 @@ export function icloudPhotosRouter() {
                     // Archived copy unreadable (e.g. storage wiped) — fall through to a live fetch.
                 }
             }
-            const url = photo.resources[resolution]?.downloadURL;
-            if (!url) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
-            ctx.body = Buffer.from(await withICloudErrors(() => icloud.download(id, url)));
+            ctx.body = Buffer.from(await withICloudErrors(() => downloadRendition(icloud, repo, id, photo, resolution)));
             return;
         }
 
@@ -217,8 +255,8 @@ export function icloudPhotosRouter() {
             return;
         }
 
-        if (!rendition?.downloadURL) throw new HttpError(404).withDetails({ reason: 'rendition_not_found', resolution });
-        const bytes = await withICloudErrors(() => icloud.download(id, rendition.downloadURL));
+        // Miss: fetch through the account (healing an expired signed URL if needed), then cache.
+        const bytes = await withICloudErrors(() => downloadRendition(icloud, repo, id, photo, resolution));
         // Best-effort cache write — a storage hiccup must not fail the (successful) fetch.
         try {
             await cache.store(cacheKey, bytes, contentType);

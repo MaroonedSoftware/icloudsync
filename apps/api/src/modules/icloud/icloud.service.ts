@@ -1,5 +1,5 @@
 import { ICloudClient } from '@icloudsync/icloud';
-import type { LoginResult, PhotosService, SessionStore, TwoFactorOptions } from '@icloudsync/icloud';
+import type { LoginResult, PhotoResource, PhotosService, SessionStore, TwoFactorOptions } from '@icloudsync/icloud';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { defaultArchivePrefix } from './storage/photo.prefix.js';
 
@@ -165,6 +165,27 @@ export class ICloudService {
     async download(accountId: string, url: string): Promise<Uint8Array> {
         await this.restoreAccount(accountId);
         return (await this.clientFor(accountId)).download(url);
+    }
+
+    /**
+     * Re-fetch fresh, non-expired rendition URLs for one asset by re-looking it up
+     * in CloudKit. The persisted `downloadURL`s are signed and expire within hours
+     * of a sync, so the download proxy calls this to heal a stale URL on demand.
+     * Both the asset and (when given) its master record are looked up so derived
+     * and original renditions all come back. Returns the fresh resource map, or
+     * `undefined` if the record no longer resolves.
+     */
+    async refreshRenditions(
+        accountId: string,
+        recordName: string,
+        masterRecordName?: string,
+        zoneName?: string,
+    ): Promise<Record<string, PhotoResource> | undefined> {
+        await this.restoreAccount(accountId);
+        const photos = await this.photos(accountId, zoneName);
+        const names = masterRecordName && masterRecordName !== recordName ? [recordName, masterRecordName] : [recordName];
+        const asset = await photos.lookup(names);
+        return asset?.resources;
     }
 
     /** Escape hatch to the underlying client for advanced use. */

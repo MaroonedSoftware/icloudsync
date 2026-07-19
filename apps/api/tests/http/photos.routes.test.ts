@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import { JobBroker } from '@maroonedsoftware/jobbroker';
 import { ICloudError } from '@icloudsync/icloud';
+import type { PhotoResource } from '@icloudsync/icloud';
 import { Logger } from '@maroonedsoftware/logger';
 import { createRegistry } from 'injectkit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -84,6 +85,7 @@ const STATS: PhotoStats = {
 /** In-memory stand-in for the repository's read surface. */
 class FakeRepo {
     lastList?: { id: string; options: ListPhotosOptions };
+    updated?: { id: string; recordName: string; resources: Record<string, unknown> };
     listImpl: () => ListPhotosResult = () => ({ photos: [photo('A')], total: 1 });
     getImpl: (recordName: string) => SyncedPhoto | null = () => null;
     statsImpl: () => PhotoStats = () => STATS;
@@ -97,6 +99,10 @@ class FakeRepo {
     }
     stats(_id: string): Promise<PhotoStats> {
         return Promise.resolve(this.statsImpl());
+    }
+    updateResources(id: string, recordName: string, resources: Record<string, unknown>): Promise<void> {
+        this.updated = { id, recordName, resources };
+        return Promise.resolve();
     }
 }
 
@@ -146,7 +152,11 @@ describe('icloud photos routes', () => {
     let thumbnails: FakeThumbnailCache;
     let syncRegistry: SyncRegistry;
     let syncProgress: SyncProgressRegistry;
-    let icloud: { download: (id: string, url: string) => Promise<Uint8Array>; listAccounts: () => Promise<Array<{ id: string; account: string }>> };
+    let icloud: {
+        download: (id: string, url: string) => Promise<Uint8Array>;
+        refreshRenditions: (id: string, recordName: string, masterRecordName?: string) => Promise<Record<string, PhotoResource> | undefined>;
+        listAccounts: () => Promise<Array<{ id: string; account: string }>>;
+    };
 
     beforeEach(() => {
         repo = new FakeRepo();
@@ -155,7 +165,11 @@ describe('icloud photos routes', () => {
         thumbnails = new FakeThumbnailCache();
         syncRegistry = new SyncRegistry();
         syncProgress = new SyncProgressRegistry();
-        icloud = { download: async () => new Uint8Array([1, 2, 3]), listAccounts: async () => [{ id: ACCOUNT_ID, account: 'me@icloud.com' }] };
+        icloud = {
+            download: async () => new Uint8Array([1, 2, 3]),
+            refreshRenditions: async () => undefined,
+            listAccounts: async () => [{ id: ACCOUNT_ID, account: 'me@icloud.com' }],
+        };
 
         const registry = createRegistry();
         registry.register(Logger).useInstance(silentLogger);
@@ -316,6 +330,49 @@ describe('icloud photos routes', () => {
         expect(res.headers.get('content-type')).toBe('video/mp4');
         expect(res.headers.get('content-disposition')).toBe('inline');
         expect(thumbnails.files.get(`${ACCOUNT_ID}/V/resVidMedRes-vchk`)).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it('refreshes an expired signed URL, persists fresh renditions, and retries', async () => {
+        repo.getImpl = () =>
+            photo('A', {
+                masterRecordName: 'master-A',
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://icloud/expired', fileChecksum: 'chk' } },
+            });
+        icloud.download = async (_id, url) => {
+            if (url === 'https://icloud/expired') throw new ICloudError('Download failed (410)', 410);
+            if (url === 'https://icloud/fresh') return new Uint8Array([5, 5, 5]);
+            throw new Error(`unexpected url ${url}`);
+        };
+        const fresh = { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://icloud/fresh', fileChecksum: 'chk' } };
+        let refreshedFor: { recordName: string; master?: string } | undefined;
+        icloud.refreshRenditions = async (_id, recordName, master) => {
+            refreshedFor = { recordName, master };
+            return fresh;
+        };
+
+        const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(res.status).toBe(200);
+        expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([5, 5, 5]));
+        expect(refreshedFor).toEqual({ recordName: 'A', master: 'master-A' });
+        // Fresh renditions are persisted and the retried bytes are cached.
+        expect(repo.updated).toEqual({ id: ACCOUNT_ID, recordName: 'A', resources: fresh });
+        expect(thumbnails.files.get(`${ACCOUNT_ID}/A/resJPEGThumb-chk`)).toEqual(new Uint8Array([5, 5, 5]));
+    });
+
+    it('502s when an expired URL cannot be refreshed', async () => {
+        repo.getImpl = () =>
+            photo('A', {
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://icloud/expired', fileChecksum: 'chk' } },
+            });
+        icloud.download = async () => {
+            throw new ICloudError('Download failed (410)', 410);
+        };
+        icloud.refreshRenditions = async () => undefined; // asset gone upstream
+
+        const res = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(res.status).toBe(502);
+        expect(await res.json()).toMatchObject({ details: { reason: 'icloud_upstream_error', upstreamStatus: 410 } });
+        expect(repo.updated).toBeUndefined();
     });
 
     it('maps an unknown rendition to its CloudKit fileType MIME', async () => {
