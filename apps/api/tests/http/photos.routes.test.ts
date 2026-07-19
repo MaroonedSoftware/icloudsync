@@ -373,6 +373,26 @@ describe('icloud photos routes', () => {
         expect(res.status).toBe(502);
         expect(await res.json()).toMatchObject({ details: { reason: 'icloud_upstream_error', upstreamStatus: 410 } });
         expect(repo.updated).toBeUndefined();
+        // The failure must NOT be cacheable, or the browser replays a broken tile for a day.
+        expect(res.headers.get('cache-control')).toBe('no-store');
+    });
+
+    it('makes a failed thumbnail fetch non-cacheable but a served one cacheable', async () => {
+        // Missing rendition (404) → no-store, so the browser retries once bytes exist.
+        repo.getImpl = () => photo('A', { resources: {} });
+        const miss = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(miss.status).toBe(404);
+        expect(miss.headers.get('cache-control')).toBe('no-store');
+
+        // A successful thumbnail is cacheable.
+        thumbnails.files.set(`${ACCOUNT_ID}/A/resJPEGThumb-chk1`, new Uint8Array([7, 7, 7]));
+        repo.getImpl = () =>
+            photo('A', {
+                resources: { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://content.icloud.com/A/thumb', fileChecksum: 'chk1' } },
+            });
+        const hit = await fetch(`${base}${acct}/photos/A/download?resolution=resJPEGThumb`);
+        expect(hit.status).toBe(200);
+        expect(hit.headers.get('cache-control')).toBe('private, max-age=86400');
     });
 
     it('maps an unknown rendition to its CloudKit fileType MIME', async () => {

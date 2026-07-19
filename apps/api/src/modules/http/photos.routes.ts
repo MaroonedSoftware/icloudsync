@@ -210,8 +210,14 @@ export function icloudPhotosRouter() {
         const photo = await repo.get(id, ctx.params.recordName ?? '');
         if (!photo) throw new HttpError(404).withDetails({ reason: 'photo_not_found' });
 
-        // Renditions are immutable (content-addressed by checksum), so let the browser cache them.
-        ctx.set('Cache-Control', 'private, max-age=86400');
+        // Default to a non-cacheable response; only the success paths below opt into
+        // browser caching. This keeps a transient failure (an expired-URL 502, a
+        // missing rendition 404) from being cached and replayed as a broken image
+        // long after the bytes are actually available — errorMiddleware doesn't strip
+        // headers set before the throw, so the caching header must not be set yet.
+        ctx.set('Cache-Control', 'no-store');
+        // Renditions are immutable (content-addressed by checksum), so a successful body may be cached for a day.
+        const cacheable = 'private, max-age=86400';
 
         // Originals are downloads of the durable backup: serve the archived copy as
         // an attachment when it exists, falling back to a live iCloud fetch.
@@ -223,13 +229,16 @@ export function icloudPhotosRouter() {
                 try {
                     const stream = await ctx.container.get(PhotoArchive).read(photo.backupKey);
                     if (photo.backupSize != null) ctx.set('Content-Length', String(photo.backupSize));
+                    ctx.set('Cache-Control', cacheable);
                     ctx.body = stream;
                     return;
                 } catch {
                     // Archived copy unreadable (e.g. storage wiped) — fall through to a live fetch.
                 }
             }
-            ctx.body = Buffer.from(await withICloudErrors(() => downloadRendition(icloud, repo, id, photo, resolution)));
+            const originalBytes = Buffer.from(await withICloudErrors(() => downloadRendition(icloud, repo, id, photo, resolution)));
+            ctx.set('Cache-Control', cacheable);
+            ctx.body = originalBytes;
             return;
         }
 
@@ -251,6 +260,7 @@ export function icloudPhotosRouter() {
         if (cached) {
             ctx.type = contentType;
             ctx.set('Content-Disposition', 'inline');
+            ctx.set('Cache-Control', cacheable);
             ctx.body = cached;
             return;
         }
@@ -265,6 +275,7 @@ export function icloudPhotosRouter() {
         }
         ctx.type = contentType;
         ctx.set('Content-Disposition', 'inline');
+        ctx.set('Cache-Control', cacheable);
         ctx.body = Buffer.from(bytes);
     });
 
