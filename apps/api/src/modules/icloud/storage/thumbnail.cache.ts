@@ -93,7 +93,9 @@ export class ThumbnailCache {
      * correctness requirement, so callers treat failures as a cache miss.
      */
     async store(key: string, bytes: Uint8Array, contentType?: string): Promise<void> {
-        if (!this.enabled) return;
+        // Skip anything larger than the whole budget (e.g. a big video clip): caching
+        // it would only evict everything else and then itself on the same sweep.
+        if (!this.enabled || bytes.byteLength > this.maxBytes) return;
         await this.storage.write(key, Buffer.from(bytes), contentType ? { contentType } : undefined);
         this.bytesSinceCheck += bytes.byteLength;
         if (this.bytesSinceCheck >= this.checkEveryBytes) {

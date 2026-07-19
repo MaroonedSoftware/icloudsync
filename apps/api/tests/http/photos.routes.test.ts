@@ -304,6 +304,32 @@ describe('icloud photos routes', () => {
         expect(liveCalled).toBe(false); // served from cache, not iCloud
     });
 
+    it('serves and caches a video rendition inline as video/mp4', async () => {
+        repo.getImpl = () =>
+            photo('V', {
+                resources: {
+                    resVidMedRes: { key: 'resVidMedRes', downloadURL: 'https://content.icloud.com/V/vid', fileChecksum: 'vchk' },
+                },
+            });
+        const res = await fetch(`${base}${acct}/photos/V/download?resolution=resVidMedRes`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('video/mp4');
+        expect(res.headers.get('content-disposition')).toBe('inline');
+        expect(thumbnails.files.get(`${ACCOUNT_ID}/V/resVidMedRes-vchk`)).toEqual(new Uint8Array([1, 2, 3]));
+    });
+
+    it('maps an unknown rendition to its CloudKit fileType MIME', async () => {
+        repo.getImpl = () =>
+            photo('G', {
+                resources: {
+                    resAltRes: { key: 'resAltRes', downloadURL: 'https://content.icloud.com/G/alt', fileType: 'com.compuserve.gif' },
+                },
+            });
+        const res = await fetch(`${base}${acct}/photos/G/download?resolution=resAltRes`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/gif');
+    });
+
     it('reports thumbnails: false in stats when the cache is disabled', async () => {
         thumbnails.enabled = false;
         const res = await fetch(`${base}${acct}/stats`);

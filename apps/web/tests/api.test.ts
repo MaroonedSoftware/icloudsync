@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, api, downloadUrl, previewResolution, thumbnailResolution, type Photo, type PhotoResource } from '../src/api';
+import { ApiError, api, downloadUrl, isVideo, previewResolution, thumbnailResolution, type Photo, type PhotoResource } from '../src/api';
 
 /** Build a minimal `Response`-like stub matching the fields `request()` reads. */
 function fakeResponse(opts: {
@@ -184,6 +184,12 @@ describe('previewResolution', () => {
     it('falls back to the grid thumbnail when no preview-grade rendition exists', () => {
         expect(previewResolution(photoWith(['resWeirdCustom']))).toBe('resWeirdCustom');
         expect(previewResolution(photoWith([]))).toBeUndefined();
+    });
+
+    it('detects videos by their video renditions', () => {
+        expect(isVideo(photoWith(['resVidMedRes', 'resJPEGThumb']))).toBe(true);
+        expect(isVideo(photoWith(['resOriginalVidComplRes']))).toBe(true);
+        expect(isVideo(photoWith(['resJPEGThumb', 'resJPEGFullRes', 'resOriginalRes']))).toBe(false);
     });
 });
 

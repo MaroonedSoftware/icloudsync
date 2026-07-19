@@ -135,5 +135,12 @@ describe('ThumbnailCache', () => {
             expect(storage.objects.has('a')).toBe(true);
             expect(storage.objects.has('b')).toBe(true);
         });
+
+        it('does not cache an item larger than the whole budget (e.g. a big video)', async () => {
+            const storage = new InMemoryStorage();
+            const cache = new ThumbnailCache(storage, 100);
+            await cache.store('big', new Uint8Array(200).fill(1));
+            expect(storage.objects.size).toBe(0);
+        });
     });
 });

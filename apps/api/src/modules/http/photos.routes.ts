@@ -20,14 +20,31 @@ function isOriginal(resolution: string): boolean {
     return resolution.startsWith('resOriginal');
 }
 
+/** CloudKit `fileType` UTIs → MIME, for rendition formats not implied by the key. */
+const UTI_CONTENT_TYPES: Record<string, string> = {
+    'public.jpeg': 'image/jpeg',
+    'public.png': 'image/png',
+    'public.heic': 'image/heic',
+    'public.heif': 'image/heif',
+    'public.tiff': 'image/tiff',
+    'com.compuserve.gif': 'image/gif',
+    'public.mpeg-4': 'video/mp4',
+    'com.apple.quicktime-movie': 'video/quicktime',
+};
+
 /**
- * The inline MIME type for a derived rendition served to an `<img>`. Every JPEG
- * rendition (`resJPEGThumb`, `resJPEGMedRes`, …) is `image/jpeg`; anything else
- * falls back to a generic binary type (CloudKit's `fileType` is a UTI, not a MIME,
- * so it isn't usable directly).
+ * The inline MIME type for a derived rendition. The rendition key is definitive
+ * for the two derivative formats iCloud produces — every `resJPEG*` rendition is
+ * JPEG and every `resVid*` rendition is an MP4 clip, regardless of the original's
+ * format — so those are mapped by key (which is why a HEIC photo's JPEG thumbnail
+ * still serves as `image/jpeg`, and a video preview plays inline as `video/mp4`).
+ * Anything else falls back to the resource's CloudKit `fileType` UTI, then a
+ * generic binary type.
  */
-function renditionContentType(resolution: string): string {
-    return resolution.startsWith('resJPEG') ? 'image/jpeg' : 'application/octet-stream';
+function renditionContentType(resolution: string, fileType?: string): string {
+    if (resolution.startsWith('resJPEG')) return 'image/jpeg';
+    if (resolution.startsWith('resVid')) return 'video/mp4';
+    return (fileType && UTI_CONTENT_TYPES[fileType]) || 'application/octet-stream';
 }
 
 /** An optional `?flag=true|false` query param (absent → undefined). */
@@ -190,7 +207,7 @@ export function icloudPhotosRouter() {
 
         const rendition = photo.resources[resolution];
         const cacheKey = cache.key(id, photo.recordName, resolution, rendition?.fileChecksum);
-        const contentType = renditionContentType(resolution);
+        const contentType = renditionContentType(resolution, rendition?.fileType);
 
         const cached = await cache.read(cacheKey);
         if (cached) {

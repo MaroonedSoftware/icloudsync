@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, downloadUrl, previewResolution, thumbnailResolution, type Photo, type Stats } from '../api.js';
+import { api, downloadUrl, isVideo, previewResolution, thumbnailResolution, type Photo, type Stats } from '../api.js';
 import { bytes, count, relativeTime, scheduleLabel } from '../format.js';
 import { AccountStorage } from './AccountStorage.js';
 import { Settings } from './Settings.js';
@@ -218,6 +218,11 @@ function Thumb({ accountId, photo }: { accountId: string; photo: Photo }) {
         <a className="thumb" href={preview ? downloadUrl(accountId, photo.recordName, preview) : undefined} target="_blank" rel="noreferrer"
             title={photo.filename ?? photo.recordName}>
             <img loading="lazy" src={downloadUrl(accountId, photo.recordName, thumb)} alt={photo.filename ?? photo.recordName} />
+            {isVideo(photo) && (
+                <span className="play" aria-hidden>
+                    ▶
+                </span>
+            )}
             {photo.isFavorite && <span className="fav">★</span>}
         </a>
     );

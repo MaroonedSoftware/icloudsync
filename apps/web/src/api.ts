@@ -303,6 +303,11 @@ export function previewResolution(photo: Photo): string | undefined {
     return PREVIEW_PREFERENCE.find(k => k in photo.resources) ?? thumbnailResolution(photo);
 }
 
+/** Whether an asset is a video (has a video rendition), so its tile can show a play badge. */
+export function isVideo(photo: Photo): boolean {
+    return Object.keys(photo.resources).some(k => k.startsWith('resVid') || k === 'resOriginalVidComplRes');
+}
+
 /** Same-origin download URL for an account's rendition, served by the API's download proxy. */
 export function downloadUrl(id: string, recordName: string, resolution: string): string {
     return `${accountPath(id)}/photos/${encodeURIComponent(recordName)}/download?resolution=${encodeURIComponent(resolution)}`;
