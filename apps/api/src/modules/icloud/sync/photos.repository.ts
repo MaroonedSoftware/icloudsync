@@ -25,6 +25,8 @@ export interface PhotoStore {
      * recent-backups grid), used to warm the thumbnail cache after a sync.
      */
     recent(accountId: string, limit: number): Promise<SyncedPhoto[]>;
+    /** Overwrite one asset's renditions with freshly re-looked-up (non-expired) URLs. */
+    updateResources(accountId: string, recordName: string, resources: Record<string, PhotoResource>): Promise<void>;
 }
 
 /** What is known about an asset's existing archived copy (for the sync skip/collision logic). */

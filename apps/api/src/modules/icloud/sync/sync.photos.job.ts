@@ -1,6 +1,6 @@
 import { Job } from '@maroonedsoftware/jobbroker';
 import { Logger } from '@maroonedsoftware/logger';
-import { RateLimitError } from '@icloudsync/icloud';
+import { ICloudError, RateLimitError } from '@icloudsync/icloud';
 import type { ListOptions, PhotoAsset, PhotoResource, PhotosService, SmartAlbum, SortDirection } from '@icloudsync/icloud';
 import { PhotoArchive } from '../storage/photo.archive.js';
 import { ThumbnailCache } from '../storage/thumbnail.cache.js';
@@ -40,6 +40,14 @@ const THUMBNAIL_RENDITION_PREFERENCE = ['resJPEGThumb', 'resJPEGMedRes', 'resVid
 /** The rendition the recent-backups grid tile will request for these resources, or undefined when only an original exists. */
 function thumbnailRenditionKey(resources: Record<string, PhotoResource>): string | undefined {
     return THUMBNAIL_RENDITION_PREFERENCE.find(key => resources[key]?.downloadURL);
+}
+
+/** Content-server statuses meaning a CloudKit signed URL is stale (mirrors the download proxy's own healing). */
+const STALE_URL_STATUSES = new Set([401, 403, 410]);
+
+/** Whether a download error is an expired/invalid signed-URL rejection (vs. a genuine upstream failure). */
+function isStaleUrlError(error: unknown): boolean {
+    return error instanceof ICloudError && error.status !== undefined && STALE_URL_STATUSES.has(error.status);
 }
 
 /**
@@ -151,6 +159,12 @@ export interface PhotoSyncSource {
     photos(accountId: string, zoneName?: string): Promise<PhotosService>;
     /** Download bytes from a signed iCloud rendition URL using the account's session. */
     download(accountId: string, url: string): Promise<Uint8Array>;
+    /**
+     * Re-fetch fresh rendition URLs for one asset (heals an expired signed URL by
+     * re-looking it up in CloudKit). Optional so lightweight fakes can omit it;
+     * when absent, thumbnail warming simply skips an asset with a stale URL.
+     */
+    refreshRenditions?(accountId: string, recordName: string, masterRecordName?: string): Promise<Record<string, PhotoResource> | undefined>;
 }
 
 /**
@@ -395,7 +409,7 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
             const key = this.thumbnails.key(accountId, photo.recordName, resolution, rendition.fileChecksum);
             try {
                 if (await this.thumbnails.exists(key)) continue; // already cached (immutable by checksum)
-                const bytes = await this.icloud.download(accountId, rendition.downloadURL);
+                const bytes = await this.warmDownload(accountId, photo, resolution, rendition.downloadURL);
                 await this.thumbnails.store(key, bytes);
                 warmed += 1;
             } catch (error) {
@@ -407,6 +421,28 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
             }
         }
         if (warmed > 0) this.logger.info(`[${SYNC_PHOTOS_JOB}] warmed ${warmed} recent thumbnail(s) for ${label}`);
+    }
+
+    /**
+     * Download a thumbnail rendition for warming, healing an expired signed URL on
+     * the fly. A long sweep can outlive the signed URLs it fetched early, so a
+     * rendition's stored `downloadURL` may already be stale by the time warming
+     * reaches it; on a stale-URL rejection (401/403/410) the asset is re-looked-up
+     * for fresh URLs, the refreshed renditions are persisted, and the download is
+     * retried once. Falls back to throwing the original error when no refresh is
+     * wired or it can't produce a working URL (the caller logs and skips).
+     */
+    private async warmDownload(accountId: string, photo: SyncedPhoto, resolution: string, url: string): Promise<Uint8Array> {
+        try {
+            return await this.icloud.download(accountId, url);
+        } catch (error) {
+            if (!isStaleUrlError(error) || !this.icloud.refreshRenditions) throw error;
+            const fresh = await this.icloud.refreshRenditions(accountId, photo.recordName, photo.masterRecordName ?? undefined);
+            const freshUrl = fresh?.[resolution]?.downloadURL;
+            if (!fresh || !freshUrl) throw error;
+            await this.store.updateResources(accountId, photo.recordName, fresh);
+            return await this.icloud.download(accountId, freshUrl);
+        }
     }
 
     /**

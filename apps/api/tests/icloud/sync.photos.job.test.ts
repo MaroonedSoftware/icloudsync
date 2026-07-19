@@ -1,4 +1,4 @@
-import { PhotosService, RateLimitError } from '@icloudsync/icloud';
+import { ICloudError, PhotosService, RateLimitError } from '@icloudsync/icloud';
 import type { HttpResponse, ICloudRequester, PhotoAsset } from '@icloudsync/icloud';
 import type { Logger } from '@maroonedsoftware/logger';
 import { describe, expect, it } from 'vitest';
@@ -161,8 +161,12 @@ class FakeStore implements PhotoStore {
         this.existing.set(recordName, { checksum: backup.checksum, key: backup.key });
     }
     recentPhotos: SyncedPhoto[] = [];
+    readonly resourceUpdates: Array<{ recordName: string; resources: Record<string, unknown> }> = [];
     async recent(_accountName: string, limit: number): Promise<SyncedPhoto[]> {
         return this.recentPhotos.slice(0, limit);
+    }
+    async updateResources(_accountName: string, recordName: string, resources: Record<string, unknown>): Promise<void> {
+        this.resourceUpdates.push({ recordName, resources });
     }
 }
 
@@ -788,6 +792,30 @@ describe('SyncPhotosJob', () => {
         await job.run({ metadataOnly: true, accountId: 'me@icloud.com' });
 
         expect(downloads).toEqual([]); // already cached — not re-downloaded
+    });
+
+    it('heals an expired thumbnail URL during warming (refresh, persist, retry)', async () => {
+        const store = new FakeStore();
+        store.recentPhotos = [syncedPhoto('rec-1', { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/stale', fileChecksum: 'c1' } })];
+        const cache = new FakeThumbnailCache();
+        const fresh = { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/fresh', fileChecksum: 'c1' } };
+        const src: PhotoSyncSource = {
+            isAuthenticated: () => true,
+            restoreAccount: async () => true,
+            photos: async () => photosWith(0),
+            download: async (_account: string, url: string) => {
+                if (url === 'https://thumb/stale') throw new ICloudError('Download failed (410)', 410);
+                if (url === 'https://thumb/fresh') return new Uint8Array([5, 5, 5]);
+                throw new Error(`unexpected url ${url}`);
+            },
+            refreshRenditions: async () => fresh,
+        };
+        const job = new SyncPhotosJob(src, store, archive(), silentLogger, undefined, undefined, undefined, undefined, thumbCache(cache));
+
+        await job.run({ metadataOnly: true, accountId: 'me@icloud.com' });
+
+        expect(cache.stored.get('me@icloud.com/rec-1/resJPEGThumb-c1')).toEqual(new Uint8Array([5, 5, 5]));
+        expect(store.resourceUpdates).toEqual([{ recordName: 'rec-1', resources: fresh }]);
     });
 
     it('warms nothing when the thumbnail cache is disabled', async () => {
