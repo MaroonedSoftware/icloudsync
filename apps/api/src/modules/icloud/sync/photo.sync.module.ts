@@ -16,6 +16,7 @@ import { ICloudConfig } from '../icloud.config.js';
 import { ICloudService } from '../icloud.service.js';
 import { registerICloud } from '../icloud.module.js';
 import { PhotoArchive } from '../storage/photo.archive.js';
+import { ThumbnailCache } from '../storage/thumbnail.cache.js';
 import { PhotosRepository } from './photos.repository.js';
 import { SyncRegistry } from './sync.registry.js';
 import { SyncProgressRegistry } from './sync.progress.registry.js';
@@ -106,6 +107,8 @@ export function registerPhotoSync(registry: InjectKitRegistry): void {
                     container.get(NotificationsService),
                     container.get(AccountsService),
                     container.get(SyncProgressRegistry),
+                    undefined, // wait: use the default (real timer)
+                    container.get(ThumbnailCache),
                 ),
         )
         .asSingleton();

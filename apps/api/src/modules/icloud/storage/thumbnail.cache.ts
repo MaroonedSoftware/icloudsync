@@ -76,6 +76,12 @@ export class ThumbnailCache {
         return `${this.prefix}${segment(accountId)}/${segment(recordName)}/${segment(resolution)}${tag}`;
     }
 
+    /** Whether bytes are already cached under `key` (always `false` when disabled). Cheaper than {@link read} for a presence check. */
+    exists(key: string): Promise<boolean> {
+        if (!this.enabled) return Promise.resolve(false);
+        return this.storage.exists(key);
+    }
+
     /** Open a stream of the cached bytes, or `undefined` when nothing is cached under `key` (or the cache is disabled). */
     async read(key: string): Promise<Readable | undefined> {
         if (!this.enabled) return undefined;

@@ -20,6 +20,11 @@ export interface PhotoStore {
     backedUp(accountId: string): Promise<Map<string, BackedUpAsset>>;
     /** Record that an asset's bytes have been archived. */
     markBackedUp(accountId: string, recordName: string, backup: BackupRecord): Promise<void>;
+    /**
+     * The newest `limit` visible assets (by capture date, matching the dashboard's
+     * recent-backups grid), used to warm the thumbnail cache after a sync.
+     */
+    recent(accountId: string, limit: number): Promise<SyncedPhoto[]>;
 }
 
 /** What is known about an asset's existing archived copy (for the sync skip/collision logic). */
@@ -243,6 +248,16 @@ export class PhotosRepository extends KyselyRepository<DB> implements PhotoStore
             .execute();
 
         return { photos: rows.map(toSyncedPhoto), total: Number(totalRow?.count ?? 0) };
+    }
+
+    /**
+     * The newest `limit` visible (non-hidden, non-deleted) assets by capture date —
+     * the same set the dashboard's recent-backups grid shows. Used to warm the
+     * thumbnail cache after a sync so those tiles load without a live iCloud fetch.
+     */
+    async recent(accountId: string, limit: number): Promise<SyncedPhoto[]> {
+        const { photos } = await this.list(accountId, { limit, offset: 0, order: 'desc' });
+        return photos;
     }
 
     /** A single synced photo by record name, or null if this account has not synced it. */

@@ -3,6 +3,7 @@ import { Logger } from '@maroonedsoftware/logger';
 import { RateLimitError } from '@icloudsync/icloud';
 import type { ListOptions, PhotoAsset, PhotoResource, PhotosService, SmartAlbum, SortDirection } from '@icloudsync/icloud';
 import { PhotoArchive } from '../storage/photo.archive.js';
+import { ThumbnailCache } from '../storage/thumbnail.cache.js';
 import { layoutGroup, type PhotoLayout } from '../storage/photo.layout.js';
 import { namingLeaf, shortHash, withSuffix, type PhotoNaming } from '../storage/photo.naming.js';
 import {
@@ -16,7 +17,7 @@ import {
 import { defaultArchivePrefix } from '../storage/photo.prefix.js';
 import { buildSidecar, sidecarKey } from '../storage/photo.sidecar.js';
 import { SyncProgressRegistry } from './sync.progress.registry.js';
-import type { BackedUpAsset, PhotoStore } from './photos.repository.js';
+import type { BackedUpAsset, PhotoStore, SyncedPhoto } from './photos.repository.js';
 
 /** The pg-boss queue name for the photo-sync job. pg-boss only allows
  * alphanumerics, `_`, `-`, `.`, `/` in names — no colons. */
@@ -24,6 +25,22 @@ export const SYNC_PHOTOS_JOB = 'icloud/sync-photos';
 
 /** Rendition keys that hold the full-resolution original (photo, then video). */
 const ORIGINAL_KEYS = ['resOriginalRes', 'resOriginalVidComplRes'];
+
+/** How many of the newest assets to warm in the thumbnail cache after a sync (covers the dashboard's recent-backups grid with headroom). */
+const RECENT_THUMBNAIL_WARM_COUNT = 24;
+
+/**
+ * Derived (non-original) rendition keys in ascending size — mirrors the web
+ * client's grid `thumbnailResolution` preference so warming caches the exact key
+ * the tile requests. Originals are excluded: those are served (and archived) via a
+ * different path, not the thumbnail cache.
+ */
+const THUMBNAIL_RENDITION_PREFERENCE = ['resJPEGThumb', 'resJPEGMedRes', 'resVidMedRes', 'resJPEGFullRes'];
+
+/** The rendition the recent-backups grid tile will request for these resources, or undefined when only an original exists. */
+function thumbnailRenditionKey(resources: Record<string, PhotoResource>): string | undefined {
+    return THUMBNAIL_RENDITION_PREFERENCE.find(key => resources[key]?.downloadURL);
+}
 
 /**
  * How many times one run will wait out an iCloud rate limit and resume before
@@ -180,6 +197,8 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
         private readonly progress?: SyncProgressRegistry,
         /** Sleep between rate-limit deferrals; injectable so tests need not wait on real timers. */
         private readonly wait: (ms: number, signal?: AbortSignal) => Promise<void> = delay,
+        /** Thumbnail cache to warm for the newest assets after a successful sync. Optional; when absent no warming runs. */
+        private readonly thumbnails?: ThumbnailCache,
     ) {
         super();
     }
@@ -319,7 +338,7 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
             const rankBefore = resumeRank;
             try {
                 await runPass();
-                return;
+                break; // clean completion — fall through to cache warming
             } catch (error) {
                 if (!(error instanceof RateLimitError)) throw error;
                 if (signal?.aborted) return;
@@ -341,6 +360,53 @@ export class SyncPhotosJob extends Job<SyncPhotosPayload> {
                 if (signal?.aborted) return;
             }
         }
+
+        // Sync finished cleanly: warm the thumbnail cache for the newest assets so the
+        // recent-backups grid loads from disk even when nothing new was added (a
+        // re-sync refreshes every asset's signed URLs, healing any that had expired).
+        await this.warmRecentThumbnails(accountId, label, signal);
+    }
+
+    /**
+     * Prime the {@link ThumbnailCache} with the newest assets' grid thumbnails so
+     * the recent-backups strip renders from disk instead of a live (and expiry-prone)
+     * iCloud fetch. Runs after a completed sync, when every asset's `downloadURL` has
+     * just been refreshed. Best-effort throughout: a per-asset failure is logged and
+     * skipped, an iCloud rate limit stops warming early (the next sync retries), and
+     * already-cached thumbnails are left untouched so a re-sync doesn't re-download
+     * them. A no-op when no cache is wired or thumbnails are disabled.
+     */
+    private async warmRecentThumbnails(accountId: string, label: string, signal?: AbortSignal): Promise<void> {
+        if (!this.thumbnails?.enabled || signal?.aborted) return;
+        let recent: SyncedPhoto[];
+        try {
+            recent = await this.store.recent(accountId, RECENT_THUMBNAIL_WARM_COUNT);
+        } catch (error) {
+            this.logger.warn(`[${SYNC_PHOTOS_JOB}] could not read recent photos to warm thumbnails for ${label}: ${String(error)}`);
+            return;
+        }
+
+        let warmed = 0;
+        for (const photo of recent) {
+            if (signal?.aborted) break;
+            const resolution = thumbnailRenditionKey(photo.resources);
+            if (!resolution) continue;
+            const rendition = photo.resources[resolution]!;
+            const key = this.thumbnails.key(accountId, photo.recordName, resolution, rendition.fileChecksum);
+            try {
+                if (await this.thumbnails.exists(key)) continue; // already cached (immutable by checksum)
+                const bytes = await this.icloud.download(accountId, rendition.downloadURL);
+                await this.thumbnails.store(key, bytes);
+                warmed += 1;
+            } catch (error) {
+                if (error instanceof RateLimitError) {
+                    this.logger.warn(`[${SYNC_PHOTOS_JOB}] rate limited while warming thumbnails for ${label}; stopping early`);
+                    break;
+                }
+                this.logger.warn(`[${SYNC_PHOTOS_JOB}] could not warm thumbnail for ${photo.recordName}: ${String(error)}`);
+            }
+        }
+        if (warmed > 0) this.logger.info(`[${SYNC_PHOTOS_JOB}] warmed ${warmed} recent thumbnail(s) for ${label}`);
     }
 
     /**

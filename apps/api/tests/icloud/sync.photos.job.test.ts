@@ -3,11 +3,12 @@ import type { HttpResponse, ICloudRequester, PhotoAsset } from '@icloudsync/iclo
 import type { Logger } from '@maroonedsoftware/logger';
 import { describe, expect, it } from 'vitest';
 import type { PhotoArchive } from '../../src/modules/icloud/storage/photo.archive.js';
+import type { ThumbnailCache } from '../../src/modules/icloud/storage/thumbnail.cache.js';
 import type { PhotoLayout } from '../../src/modules/icloud/storage/photo.layout.js';
 import type { FilesystemPreset } from '../../src/modules/icloud/storage/photo.destination.js';
 import { SyncPhotosJob, type AccountSource, type PhotoSyncSource } from '../../src/modules/icloud/sync/sync.photos.job.js';
 import { SyncProgressRegistry } from '../../src/modules/icloud/sync/sync.progress.registry.js';
-import type { BackedUpAsset, BackupRecord, PhotoStore } from '../../src/modules/icloud/sync/photos.repository.js';
+import type { BackedUpAsset, BackupRecord, PhotoStore, SyncedPhoto } from '../../src/modules/icloud/sync/photos.repository.js';
 import { shortHash, type PhotoNaming } from '../../src/modules/icloud/storage/photo.naming.js';
 
 const b64 = (s: string): string => Buffer.from(s, 'utf-8').toString('base64');
@@ -159,6 +160,10 @@ class FakeStore implements PhotoStore {
         this.marks.push({ recordName, backup });
         this.existing.set(recordName, { checksum: backup.checksum, key: backup.key });
     }
+    recentPhotos: SyncedPhoto[] = [];
+    async recent(_accountName: string, limit: number): Promise<SyncedPhoto[]> {
+        return this.recentPhotos.slice(0, limit);
+    }
 }
 
 class FakeArchive {
@@ -188,6 +193,42 @@ function source(opts: { authenticated: boolean; count: number; downloads?: strin
 }
 
 const archive = (): PhotoArchive => new FakeArchive() as unknown as PhotoArchive;
+
+/** In-memory {@link ThumbnailCache} stand-in exposing just what the warming step uses. */
+class FakeThumbnailCache {
+    enabled = true;
+    readonly stored = new Map<string, Uint8Array>();
+    key(accountId: string, recordName: string, resolution: string, checksum?: string | null): string {
+        return `${accountId}/${recordName}/${resolution}${checksum ? `-${checksum}` : ''}`;
+    }
+    exists(key: string): Promise<boolean> {
+        return Promise.resolve(this.stored.has(key));
+    }
+    store(key: string, bytes: Uint8Array): Promise<void> {
+        this.stored.set(key, bytes);
+        return Promise.resolve();
+    }
+}
+const thumbCache = (cache: FakeThumbnailCache): ThumbnailCache => cache as unknown as ThumbnailCache;
+
+/** Build a minimal {@link SyncedPhoto} row for the recent-warming tests. */
+function syncedPhoto(recordName: string, resources: SyncedPhoto['resources']): SyncedPhoto {
+    return {
+        recordName,
+        masterRecordName: `master-${recordName}`,
+        filename: `${recordName}.jpg`,
+        assetDate: ASSET_DATE,
+        addedDate: ASSET_DATE,
+        isFavorite: false,
+        isHidden: false,
+        isDeleted: false,
+        resources,
+        syncedAt: '2026-06-29T00:00:00.000Z',
+        backupKey: null,
+        backupSize: null,
+        backedUpAt: null,
+    };
+}
 
 /**
  * A per-account source returning the given overrides for every account (prefix
@@ -697,5 +738,79 @@ describe('SyncPhotosJob', () => {
         await job.run({ batchSize: 10, accountId: 'me@icloud.com' }, controller.signal);
 
         expect(downloads).toHaveLength(1);
+    });
+
+    it('warms the newest thumbnails into the cache after a completed sync', async () => {
+        const store = new FakeStore();
+        store.recentPhotos = [
+            syncedPhoto('rec-1', { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/1', fileChecksum: 'c1' } }),
+            syncedPhoto('rec-2', { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/2', fileChecksum: 'c2' } }),
+        ];
+        const cache = new FakeThumbnailCache();
+        const downloads: string[] = [];
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 0, downloads }),
+            store,
+            archive(),
+            silentLogger,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            thumbCache(cache),
+        );
+
+        await job.run({ metadataOnly: true, accountId: 'me@icloud.com' });
+
+        expect(downloads).toEqual(['https://thumb/1', 'https://thumb/2']);
+        expect(cache.stored.get('me@icloud.com/rec-1/resJPEGThumb-c1')).toBeDefined();
+        expect(cache.stored.get('me@icloud.com/rec-2/resJPEGThumb-c2')).toBeDefined();
+    });
+
+    it('skips warming a thumbnail that is already cached', async () => {
+        const store = new FakeStore();
+        store.recentPhotos = [syncedPhoto('rec-1', { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/1', fileChecksum: 'c1' } })];
+        const cache = new FakeThumbnailCache();
+        cache.stored.set('me@icloud.com/rec-1/resJPEGThumb-c1', new Uint8Array([9]));
+        const downloads: string[] = [];
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 0, downloads }),
+            store,
+            archive(),
+            silentLogger,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            thumbCache(cache),
+        );
+
+        await job.run({ metadataOnly: true, accountId: 'me@icloud.com' });
+
+        expect(downloads).toEqual([]); // already cached — not re-downloaded
+    });
+
+    it('warms nothing when the thumbnail cache is disabled', async () => {
+        const store = new FakeStore();
+        store.recentPhotos = [syncedPhoto('rec-1', { resJPEGThumb: { key: 'resJPEGThumb', downloadURL: 'https://thumb/1', fileChecksum: 'c1' } })];
+        const cache = new FakeThumbnailCache();
+        cache.enabled = false;
+        const downloads: string[] = [];
+        const job = new SyncPhotosJob(
+            source({ authenticated: true, count: 0, downloads }),
+            store,
+            archive(),
+            silentLogger,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            thumbCache(cache),
+        );
+
+        await job.run({ metadataOnly: true, accountId: 'me@icloud.com' });
+
+        expect(downloads).toEqual([]);
+        expect(cache.stored.size).toBe(0);
     });
 });
